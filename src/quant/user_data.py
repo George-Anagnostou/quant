@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sqlite3
 import uuid
 from datetime import date
@@ -16,6 +17,7 @@ from quant.database import (
 
 DEFAULT_USER_DATA_PATH = DEFAULT_DATABASE_PATH
 DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "GOOGL", "TSLA"]
+MAX_WATCHLIST_SYMBOLS = 20
 
 
 class UserDataRepository:
@@ -112,7 +114,12 @@ class UserDataRepository:
         }
         if not position["symbol"]:
             raise ValueError("Symbol is required")
-        if position["quantity"] <= 0 or position["average_cost"] < 0:
+        if (
+            not math.isfinite(position["quantity"])
+            or not math.isfinite(position["average_cost"])
+            or position["quantity"] <= 0
+            or position["average_cost"] < 0
+        ):
             raise ValueError("Quantity must be positive and cost non-negative")
         if position["acquired"]:
             date.fromisoformat(position["acquired"])
@@ -160,6 +167,30 @@ class UserDataRepository:
         if not symbol:
             raise ValueError("Symbol is required")
         with self._connect() as connection:
+            existing = connection.execute(
+                """
+                SELECT 1 FROM watchlist WHERE user_id = ? AND symbol = ?
+                """,
+                (self.user_id, symbol),
+            ).fetchone()
+            if existing is not None:
+                rows = connection.execute(
+                    """
+                    SELECT symbol FROM watchlist
+                    WHERE user_id = ?
+                    ORDER BY sort_order, symbol
+                    """,
+                    (self.user_id,),
+                ).fetchall()
+                return [row["symbol"] for row in rows]
+            count = connection.execute(
+                "SELECT COUNT(*) FROM watchlist WHERE user_id = ?",
+                (self.user_id,),
+            ).fetchone()[0]
+            if count >= MAX_WATCHLIST_SYMBOLS:
+                raise ValueError(
+                    f"Watchlist cannot exceed {MAX_WATCHLIST_SYMBOLS} symbols"
+                )
             next_order = connection.execute(
                 """
                 SELECT COALESCE(MAX(sort_order), -1) + 1

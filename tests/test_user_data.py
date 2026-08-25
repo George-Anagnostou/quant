@@ -1,5 +1,6 @@
 import sqlite3
 import unittest
+import math
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,7 +10,11 @@ from quant.database import (
     database_connection,
     initialize_database,
 )
-from quant.user_data import DEFAULT_WATCHLIST, UserDataRepository
+from quant.user_data import (
+    DEFAULT_WATCHLIST,
+    MAX_WATCHLIST_SYMBOLS,
+    UserDataRepository,
+)
 
 
 class UserDataRepositoryTests(unittest.TestCase):
@@ -110,6 +115,29 @@ class UserDataRepositoryTests(unittest.TestCase):
             self.assertEqual(position["symbol"], "MSFT")
             self.assertTrue(repository.remove_position(position["id"]))
             self.assertFalse(repository.remove_position(position["id"]))
+
+    def test_rejects_non_finite_position_values(self) -> None:
+        with TemporaryDirectory() as directory:
+            repository = UserDataRepository(Path(directory) / "quant.db")
+
+            with self.assertRaises(ValueError):
+                repository.add_position("AAPL", math.nan, 100)
+            with self.assertRaises(ValueError):
+                repository.add_position("AAPL", 1, math.inf)
+
+    def test_limits_watchlist_size_without_rejecting_duplicates(self) -> None:
+        with TemporaryDirectory() as directory:
+            repository = UserDataRepository(Path(directory) / "quant.db")
+            repository.initialize()
+            for index in range(MAX_WATCHLIST_SYMBOLS - len(DEFAULT_WATCHLIST)):
+                repository.add_watchlist(f"SYM{index}")
+
+            self.assertEqual(
+                repository.add_watchlist(DEFAULT_WATCHLIST[0]),
+                repository.list_watchlist(),
+            )
+            with self.assertRaisesRegex(ValueError, "cannot exceed"):
+                repository.add_watchlist("OVERFLOW")
 
     def test_exposes_positions_as_the_shared_polars_shape(self) -> None:
         with TemporaryDirectory() as directory:

@@ -7,12 +7,20 @@ from unittest.mock import patch
 import polars as pl
 
 from quant.analysis import analyze_portfolio
-from quant.dashboard.services import DashboardService
+from quant.dashboard.services import MAX_QUOTE_SYMBOLS, DashboardService
 from quant.market_store import MarketDataRepository
 from quant.user_data import UserDataRepository
 
 
 class DashboardServiceTests(unittest.TestCase):
+    def test_limits_batched_quote_requests(self) -> None:
+        service = DashboardService()
+
+        with self.assertRaisesRegex(ValueError, "At most"):
+            service.quotes(
+                [f"SYM{index}" for index in range(MAX_QUOTE_SYMBOLS + 1)]
+            )
+
     def test_serves_eod_quotes_from_shared_market_history(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "quant.db"

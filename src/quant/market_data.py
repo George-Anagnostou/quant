@@ -1,7 +1,8 @@
 from collections.abc import Iterable
-from datetime import date
+from datetime import date, datetime, time
 import math
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 from lxml import html as lxml_html
 import polars as pl
@@ -22,6 +23,8 @@ MARKET_DATA_SCHEMA = {
     "Last Price": pl.Float64,
     "Volume": pl.Int64,
 }
+EASTERN_TIME = ZoneInfo("America/New_York")
+EOD_SETTLEMENT_TIME = time(20, 0)
 
 
 def get_sp500_constituents() -> pl.DataFrame:
@@ -94,17 +97,20 @@ def get_market_history(
 
         prices = closes[yahoo_symbol].dropna()
         for trading_date, price in prices.items():
+            session_date = (
+                trading_date.date()
+                if hasattr(trading_date, "date")
+                else trading_date
+            )
+            if not _is_completed_daily_bar(session_date):
+                continue
             values = {
                 name: columns.at[trading_date, yahoo_symbol]
                 for name, columns in fields.items()
             }
             rows.append(
                 {
-                    "Date": (
-                        trading_date.date()
-                        if hasattr(trading_date, "date")
-                        else trading_date
-                    ),
+                    "Date": session_date,
                     "Symbol": index_symbol,
                     "Open": _optional_float(values["Open"]),
                     "High": _optional_float(values["High"]),
@@ -187,3 +193,13 @@ def _optional_float(value: object) -> float | None:
     if value is None or math.isnan(float(value)):
         return None
     return float(value)
+
+
+def _is_completed_daily_bar(
+    session_date: date,
+    now: datetime | None = None,
+) -> bool:
+    current = now.astimezone(EASTERN_TIME) if now else datetime.now(EASTERN_TIME)
+    if session_date < current.date():
+        return True
+    return session_date == current.date() and current.time() >= EOD_SETTLEMENT_TIME

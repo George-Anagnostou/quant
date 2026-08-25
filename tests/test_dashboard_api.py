@@ -1,10 +1,16 @@
 import unittest
 from unittest.mock import patch
 
+from pydantic import ValidationError
+
 from quant.dashboard import server
 
 
 class DashboardApiTests(unittest.TestCase):
+    def test_rejects_non_finite_holding_input(self) -> None:
+        with self.assertRaises(ValidationError):
+            server.HoldingIn(symbol="AAPL", shares=float("nan"), costBasis=100)
+
     def test_health(self) -> None:
         self.assertEqual(server.health(), {"ok": True})
 

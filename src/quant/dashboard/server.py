@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, FiniteFloat
 
 from quant.dashboard.services import DashboardService
 
@@ -31,8 +31,8 @@ class WatchlistAdd(BaseModel):
 
 class HoldingIn(BaseModel):
     symbol: str
-    shares: float
-    costBasis: float
+    shares: FiniteFloat
+    costBasis: FiniteFloat
     account: str | None = None
     assetClass: str | None = None
     sector: str | None = None
@@ -57,7 +57,9 @@ def quotes(
     parsed = [symbol.strip().upper() for symbol in symbols.split(",") if symbol.strip()]
     try:
         return _clean_json(_dashboard_service.quotes(parsed, refresh))
-    except (RuntimeError, ValueError) as error:
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except RuntimeError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
 
@@ -65,7 +67,9 @@ def quotes(
 def quote(symbol: str, refresh: bool = False) -> dict:
     try:
         return _clean_json(_dashboard_service.quote(symbol, refresh))
-    except (RuntimeError, ValueError) as error:
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except RuntimeError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
 

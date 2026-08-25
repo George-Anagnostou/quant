@@ -11,6 +11,9 @@ from quant.quotes import resolve_market_history
 from quant.user_data import UserDataRepository
 
 
+MAX_QUOTE_SYMBOLS = 20
+
+
 class DashboardService:
     def __init__(
         self,
@@ -37,6 +40,8 @@ class DashboardService:
         )
         if not symbols:
             return {"quotes": []}
+        if len(symbols) > MAX_QUOTE_SYMBOLS:
+            raise ValueError(f"At most {MAX_QUOTE_SYMBOLS} symbols are allowed")
         resolve_market_history(
             symbols,
             self.market_repository,

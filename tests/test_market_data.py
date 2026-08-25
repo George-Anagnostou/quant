@@ -1,8 +1,9 @@
 import unittest
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
-from quant.market_data import get_latest_market_data
+from quant.market_data import _is_completed_daily_bar, get_latest_market_data
 
 
 class FakeSeries:
@@ -63,6 +64,23 @@ class FakeHistory:
 
 
 class LatestMarketDataTests(unittest.TestCase):
+    def test_accepts_current_session_only_after_settlement_cutoff(self) -> None:
+        eastern = ZoneInfo("America/New_York")
+        session = date(2026, 8, 25)
+
+        self.assertFalse(
+            _is_completed_daily_bar(
+                session,
+                datetime(2026, 8, 25, 19, 59, tzinfo=eastern),
+            )
+        )
+        self.assertTrue(
+            _is_completed_daily_bar(
+                session,
+                datetime(2026, 8, 25, 20, 0, tzinfo=eastern),
+            )
+        )
+
     @patch("quant.market_data.yf.download", return_value=FakeHistory())
     def test_downloads_all_symbols_in_one_batch(self, download) -> None:
         result = get_latest_market_data(["BRK.B", "AAPL"])
