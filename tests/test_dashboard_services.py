@@ -58,6 +58,10 @@ class DashboardServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Symbol is required"):
             DashboardService().quote("   ")
 
+    def test_rejects_unknown_analysis_price_basis(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Price must be"):
+            DashboardService().market_analysis("AAPL", [20], "unknown")
+
     def test_serves_eod_quotes_from_shared_market_history(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "quant.db"

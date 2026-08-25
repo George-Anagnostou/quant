@@ -7,6 +7,7 @@ import polars as pl
 
 from quant.market_data import (
     _is_completed_daily_bar,
+    get_market_history,
     get_latest_market_data,
     get_sp500_market_history,
 )
@@ -128,6 +129,11 @@ class LatestMarketDataTests(unittest.TestCase):
                 {"Symbol": "AAPL", "Last Price": 225.50, "Volume": 2_000_000},
             ],
         )
+
+    @patch("quant.market_data.yf.download", side_effect=OSError("offline"))
+    def test_reports_provider_failures_consistently(self, download) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Yahoo market data request failed"):
+            get_market_history(["AAPL"])
 
 
 if __name__ == "__main__":

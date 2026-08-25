@@ -176,6 +176,8 @@ class DashboardService:
         price: str,
         refresh: bool = False,
     ) -> dict:
+        if price not in {"close", "adjusted"}:
+            raise ValueError("Price must be close or adjusted")
         price_column = "Adjusted Close" if price == "adjusted" else "Close"
         analysis = analyze_symbols(
             [symbol],

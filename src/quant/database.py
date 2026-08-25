@@ -10,7 +10,7 @@ from pathlib import Path
 DEFAULT_DATABASE_PATH = Path("data/quant.db")
 LOCAL_ADMIN_USER_ID = "local-admin"
 MAX_WATCHLIST_SYMBOLS = 20
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 1
 _INITIALIZATION_LOCK = threading.Lock()
 
 
@@ -18,31 +18,32 @@ def initialize_database(path: Path = DEFAULT_DATABASE_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with _INITIALIZATION_LOCK:
         with _open_connection(path) as connection:
-            version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version > SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"Database schema {version} is newer than supported "
-                    f"version {SCHEMA_VERSION}"
-                )
+            version = _schema_version(connection)
             if version == SCHEMA_VERSION:
                 return
-            # Another process may migrate while this connection waits for the lock.
-            connection.execute("BEGIN IMMEDIATE")
-            version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version > SCHEMA_VERSION:
+            if version != 0:
                 raise RuntimeError(
-                    f"Database schema {version} is newer than supported "
-                    f"version {SCHEMA_VERSION}"
+                    f"Database schema {version} is not supported; delete {path} "
+                    "and recreate it"
                 )
-            if version < 1:
-                _migrate_user_data(connection)
-                connection.execute("PRAGMA user_version = 1")
-            if version < 2:
-                _migrate_market_data(connection)
-                connection.execute("PRAGMA user_version = 2")
-            if version < 3:
-                _migrate_watchlist_limit(connection)
-                connection.execute("PRAGMA user_version = 3")
+            if _application_tables(connection):
+                raise RuntimeError(
+                    f"Existing database at {path} is not supported; delete it "
+                    "and recreate it"
+                )
+
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("BEGIN IMMEDIATE")
+            version = _schema_version(connection)
+            if version == SCHEMA_VERSION:
+                return
+            if version != 0 or _application_tables(connection):
+                raise RuntimeError(
+                    f"Existing database at {path} is not supported; delete it "
+                    "and recreate it"
+                )
+            _create_schema(connection)
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 @contextmanager
@@ -54,11 +55,12 @@ def database_connection(
 
 
 @contextmanager
-def _open_connection(path: Path) -> Iterator[sqlite3.Connection]:
+def _open_connection(
+    path: Path,
+) -> Iterator[sqlite3.Connection]:
     connection = sqlite3.connect(path, timeout=30)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA busy_timeout = 30000")
-    connection.execute("PRAGMA journal_mode = WAL")
     connection.execute("PRAGMA foreign_keys = ON")
     try:
         with connection:
@@ -67,94 +69,19 @@ def _open_connection(path: Path) -> Iterator[sqlite3.Connection]:
         connection.close()
 
 
-def _migrate_user_data(connection: sqlite3.Connection) -> None:
-    connection.execute(
+def _create_schema(connection: sqlite3.Connection) -> None:
+    statements = [
         """
-        CREATE TABLE IF NOT EXISTS metadata (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE users (
             id TEXT PRIMARY KEY,
-            username TEXT NOT NULL UNIQUE,
-            display_name TEXT,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            disabled_at TEXT
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
-        """
-    )
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS api_tokens (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            name TEXT NOT NULL,
-            token_prefix TEXT NOT NULL UNIQUE,
-            token_hash TEXT NOT NULL UNIQUE,
-            scopes TEXT,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            expires_at TEXT,
-            last_used_at TEXT,
-            revoked_at TEXT
-        )
-        """
-    )
-    connection.execute(
-        """
-        INSERT OR IGNORE INTO users(id, username, display_name)
-        VALUES (?, ?, ?)
         """,
-        (LOCAL_ADMIN_USER_ID, LOCAL_ADMIN_USER_ID, "Local Admin"),
-    )
-    _migrate_positions(connection)
-    _migrate_watchlist(connection)
-    connection.execute(
-        """
-        INSERT OR IGNORE INTO metadata(key, value)
-        SELECT ?, value FROM metadata WHERE key = ?
-        """,
-        (
-            f"seeded:watchlist:{LOCAL_ADMIN_USER_ID}",
-            "seeded:watchlist",
-        ),
-    )
-
-
-def _migrate_positions(connection: sqlite3.Connection) -> None:
-    if not _table_exists(connection, "positions"):
-        _create_positions(connection)
-        return
-    if "user_id" in _table_columns(connection, "positions"):
-        return
-
-    connection.execute("ALTER TABLE positions RENAME TO positions_legacy")
-    _create_positions(connection)
-    connection.execute(
-        """
-        INSERT INTO positions(
-            id, user_id, symbol, quantity, average_cost, account,
-            asset_class, sector, acquired
-        )
-        SELECT id, ?, symbol, quantity, average_cost, account,
-               asset_class, sector, acquired
-        FROM positions_legacy
-        """,
-        (LOCAL_ADMIN_USER_ID,),
-    )
-    connection.execute("DROP TABLE positions_legacy")
-
-
-def _create_positions(connection: sqlite3.Connection) -> None:
-    connection.execute(
         """
         CREATE TABLE positions (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            symbol TEXT NOT NULL,
+            symbol TEXT NOT NULL CHECK (length(symbol) BETWEEN 1 AND 32),
             quantity REAL NOT NULL CHECK (quantity > 0),
             average_cost REAL NOT NULL CHECK (average_cost >= 0),
             account TEXT,
@@ -162,74 +89,40 @@ def _create_positions(connection: sqlite3.Connection) -> None:
             sector TEXT,
             acquired TEXT
         )
-        """
-    )
-    connection.execute(
-        """
-        CREATE INDEX IF NOT EXISTS positions_user_id_idx ON positions(user_id);
-        """
-    )
-
-
-def _migrate_watchlist(connection: sqlite3.Connection) -> None:
-    if not _table_exists(connection, "watchlist"):
-        _create_watchlist(connection)
-        return
-    if "user_id" in _table_columns(connection, "watchlist"):
-        return
-
-    connection.execute("ALTER TABLE watchlist RENAME TO watchlist_legacy")
-    _create_watchlist(connection)
-    connection.execute(
-        """
-        INSERT INTO watchlist(user_id, symbol, sort_order)
-        SELECT ?, symbol, sort_order
-        FROM watchlist_legacy
         """,
-        (LOCAL_ADMIN_USER_ID,),
-    )
-    connection.execute("DROP TABLE watchlist_legacy")
-
-
-def _create_watchlist(connection: sqlite3.Connection) -> None:
-    connection.execute(
+        "CREATE INDEX positions_user_id_idx ON positions(user_id)",
         """
         CREATE TABLE watchlist (
             user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            symbol TEXT NOT NULL,
+            symbol TEXT NOT NULL CHECK (length(symbol) BETWEEN 1 AND 32),
             sort_order INTEGER NOT NULL,
             PRIMARY KEY(user_id, symbol)
         ) WITHOUT ROWID
+        """,
         """
-    )
-
-
-def _migrate_market_data(connection: sqlite3.Connection) -> None:
-    statements = [
+        CREATE INDEX watchlist_user_order_idx
+        ON watchlist(user_id, sort_order)
+        """,
+        f"""
+        CREATE TRIGGER watchlist_size_limit
+        BEFORE INSERT ON watchlist
+        WHEN (
+            SELECT COUNT(*) FROM watchlist WHERE user_id = NEW.user_id
+        ) >= {MAX_WATCHLIST_SYMBOLS}
+        BEGIN
+            SELECT RAISE(ABORT, 'watchlist cannot exceed {MAX_WATCHLIST_SYMBOLS} symbols');
+        END
+        """,
         """
-        CREATE TABLE IF NOT EXISTS securities (
+        CREATE TABLE securities (
             id TEXT PRIMARY KEY,
-            symbol TEXT NOT NULL UNIQUE COLLATE NOCASE,
-            company TEXT,
-            exchange TEXT,
-            security_type TEXT NOT NULL DEFAULT 'equity',
-            currency TEXT NOT NULL DEFAULT 'USD',
-            active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            symbol TEXT NOT NULL UNIQUE COLLATE NOCASE
+                CHECK (length(symbol) BETWEEN 1 AND 32),
+            company TEXT
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS provider_symbols (
-            provider TEXT NOT NULL,
-            provider_symbol TEXT NOT NULL,
-            security_id TEXT NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
-            active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
-            PRIMARY KEY(provider, provider_symbol)
-        ) WITHOUT ROWID
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS daily_bars (
+        CREATE TABLE daily_bars (
             security_id TEXT NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
             session_date TEXT NOT NULL,
             provider TEXT NOT NULL,
@@ -249,18 +142,16 @@ def _migrate_market_data(connection: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """,
         """
-        CREATE INDEX IF NOT EXISTS daily_bars_provider_date_idx
+        CREATE INDEX daily_bars_provider_date_idx
         ON daily_bars(provider, session_date)
         """,
         """
-        CREATE TABLE IF NOT EXISTS universes (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        CREATE TABLE universes (
+            id TEXT PRIMARY KEY
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS universe_memberships (
+        CREATE TABLE universe_memberships (
             universe_id TEXT NOT NULL REFERENCES universes(id) ON DELETE CASCADE,
             security_id TEXT NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
             observed_on TEXT NOT NULL,
@@ -269,90 +160,33 @@ def _migrate_market_data(connection: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """,
         """
-        CREATE INDEX IF NOT EXISTS universe_memberships_observation_idx
+        CREATE INDEX universe_memberships_observation_idx
         ON universe_memberships(universe_id, observed_on, sort_order)
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS ingestion_runs (
-            id TEXT PRIMARY KEY,
-            provider TEXT NOT NULL,
-            operation TEXT NOT NULL,
-            status TEXT NOT NULL,
-            requested_symbols INTEGER NOT NULL DEFAULT 0,
-            start_date TEXT,
-            end_date TEXT,
-            rows_received INTEGER NOT NULL DEFAULT 0,
-            rows_written INTEGER NOT NULL DEFAULT 0,
-            started_at TEXT NOT NULL,
-            completed_at TEXT,
-            error TEXT
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS ingestion_issues (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ingestion_run_id TEXT REFERENCES ingestion_runs(id) ON DELETE CASCADE,
-            security_id TEXT REFERENCES securities(id) ON DELETE CASCADE,
-            session_date TEXT,
-            severity TEXT NOT NULL,
-            code TEXT NOT NULL,
-            message TEXT NOT NULL,
-            observed_value TEXT,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS sync_requests (
-            id TEXT PRIMARY KEY,
-            user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-            security_id TEXT NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
-            provider TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            started_at TEXT,
-            completed_at TEXT,
-            error TEXT
-        )
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS sync_requests_status_idx
-        ON sync_requests(status, requested_at)
         """,
     ]
     for statement in statements:
         connection.execute(statement)
-
-
-def _migrate_watchlist_limit(connection: sqlite3.Connection) -> None:
-    connection.execute(
-        f"""
-        CREATE TRIGGER IF NOT EXISTS watchlist_size_limit
-        BEFORE INSERT ON watchlist
-        WHEN (
-            SELECT COUNT(*) FROM watchlist WHERE user_id = NEW.user_id
-        ) >= {MAX_WATCHLIST_SYMBOLS}
-        BEGIN
-            SELECT RAISE(ABORT, 'watchlist cannot exceed {MAX_WATCHLIST_SYMBOLS} symbols');
-        END
-        """
-    )
     connection.execute(
         """
-        CREATE INDEX IF NOT EXISTS watchlist_user_order_idx
-        ON watchlist(user_id, sort_order);
-        """
+        INSERT INTO users(id)
+        VALUES (?)
+        """,
+        (LOCAL_ADMIN_USER_ID,),
     )
 
 
-def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
-    return (
-        connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-            (table,),
-        ).fetchone()
-        is not None
-    )
+def _schema_version(connection: sqlite3.Connection) -> int:
+    return connection.execute("PRAGMA user_version").fetchone()[0]
 
 
-def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
-    return {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+def _application_tables(connection: sqlite3.Connection) -> list[str]:
+    return [
+        row[0]
+        for row in connection.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+            """
+        )
+    ]

@@ -1,64 +1,31 @@
+import math
 import sqlite3
 import unittest
-import math
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from quant.database import (
     LOCAL_ADMIN_USER_ID,
+    SCHEMA_VERSION,
     database_connection,
     initialize_database,
 )
 from quant.user_data import (
-    DEFAULT_WATCHLIST,
     MAX_WATCHLIST_SYMBOLS,
     UserDataRepository,
 )
 
 
 class UserDataRepositoryTests(unittest.TestCase):
-    def test_migrates_existing_rows_to_local_admin(self) -> None:
+    def test_rejects_existing_unversioned_database(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "quant.db"
             with sqlite3.connect(path) as connection:
-                connection.executescript(
-                    """
-                    CREATE TABLE positions (
-                        id TEXT PRIMARY KEY,
-                        symbol TEXT NOT NULL,
-                        quantity REAL NOT NULL,
-                        average_cost REAL NOT NULL,
-                        account TEXT,
-                        asset_class TEXT,
-                        sector TEXT,
-                        acquired TEXT
-                    );
-                    CREATE TABLE watchlist (
-                        symbol TEXT PRIMARY KEY,
-                        sort_order INTEGER NOT NULL
-                    );
-                    CREATE TABLE metadata (
-                        key TEXT PRIMARY KEY,
-                        value TEXT NOT NULL
-                    );
-                    INSERT INTO positions(id, symbol, quantity, average_cost)
-                    VALUES ('position-1', 'AAPL', 2, 100);
-                    INSERT INTO watchlist(symbol, sort_order) VALUES ('MSFT', 0);
-                    INSERT INTO metadata(key, value)
-                    VALUES ('seeded:watchlist', '1');
-                    """
-                )
+                connection.execute("CREATE TABLE legacy (id INTEGER PRIMARY KEY)")
 
-            repository = UserDataRepository(path)
-
-            self.assertEqual(repository.list_positions()[0]["symbol"], "AAPL")
-            self.assertEqual(repository.list_watchlist(), ["MSFT"])
-            with database_connection(path) as connection:
-                owner = connection.execute(
-                    "SELECT user_id FROM positions WHERE id = 'position-1'"
-                ).fetchone()[0]
-            self.assertEqual(owner, LOCAL_ADMIN_USER_ID)
+            with self.assertRaisesRegex(RuntimeError, "delete it and recreate it"):
+                initialize_database(path)
 
     def test_initializes_concurrent_requests_once(self) -> None:
         with TemporaryDirectory() as directory:
@@ -73,16 +40,16 @@ class UserDataRepositoryTests(unittest.TestCase):
             with database_connection(path) as connection:
                 self.assertEqual(
                     connection.execute("PRAGMA user_version").fetchone()[0],
-                    3,
+                    SCHEMA_VERSION,
                 )
 
-    def test_rejects_newer_database_schema(self) -> None:
+    def test_rejects_unsupported_database_schema(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "quant.db"
             with sqlite3.connect(path) as connection:
                 connection.execute("PRAGMA user_version = 99")
 
-            with self.assertRaisesRegex(RuntimeError, "newer than supported"):
+            with self.assertRaisesRegex(RuntimeError, "not supported"):
                 initialize_database(path)
 
     def test_scopes_user_data(self) -> None:
@@ -92,7 +59,7 @@ class UserDataRepositoryTests(unittest.TestCase):
             local.initialize()
             with database_connection(path) as connection:
                 connection.execute(
-                    "INSERT INTO users(id, username) VALUES ('second-user', 'second-user')"
+                    "INSERT INTO users(id) VALUES ('second-user')"
                 )
             second = UserDataRepository(path, "second-user")
             second.initialize()
@@ -101,12 +68,12 @@ class UserDataRepositoryTests(unittest.TestCase):
             self.assertEqual(local.list_positions(), [])
             self.assertEqual(second.list_positions()[0]["symbol"], "MSFT")
 
-    def test_initializes_database_and_does_not_reseed_after_deletion(self) -> None:
+    def test_initializes_empty_user_data(self) -> None:
         with TemporaryDirectory() as directory:
             repository = UserDataRepository(Path(directory) / "quant.db")
             repository.initialize()
 
-            self.assertEqual(repository.list_watchlist(), DEFAULT_WATCHLIST)
+            self.assertEqual(repository.list_watchlist(), [])
 
             position = repository.add_position("AAPL", 2, 100.0, account="roth")
             repository.remove_position(position["id"])
@@ -138,11 +105,11 @@ class UserDataRepositoryTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             repository = UserDataRepository(Path(directory) / "quant.db")
             repository.initialize()
-            for index in range(MAX_WATCHLIST_SYMBOLS - len(DEFAULT_WATCHLIST)):
+            for index in range(MAX_WATCHLIST_SYMBOLS):
                 repository.add_watchlist(f"SYM{index}")
 
             self.assertEqual(
-                repository.add_watchlist(DEFAULT_WATCHLIST[0]),
+                repository.add_watchlist("SYM0"),
                 repository.list_watchlist(),
             )
             with self.assertRaisesRegex(ValueError, "cannot exceed"):

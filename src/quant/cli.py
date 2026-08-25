@@ -197,6 +197,7 @@ def _run_market(args: argparse.Namespace) -> None:
         price_column,
         repository,
         args.refresh,
+        allow_missing=args.index,
     )
     snapshot = latest_market_snapshot(analysis)
     price_metrics = [

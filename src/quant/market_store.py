@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -39,18 +40,26 @@ class MarketDataRepository:
         self,
         market_data: pl.DataFrame,
         provider: str = DEFAULT_PROVIDER,
-        universe: str | None = None,
-        observed_on: date | None = None,
     ) -> int:
         self.initialize()
         if market_data.is_empty():
             return 0
+        provider = provider.strip().lower()
+        if not provider:
+            raise ValueError("Provider is required")
         _require_columns(market_data, {"Date", "Symbol"})
         if (
             "Close" not in market_data.columns
             and "Last Price" not in market_data.columns
         ):
             raise ValueError("Market data requires Close or Last Price")
+
+        market_data = _normalize_symbols(market_data)
+        duplicate_keys = market_data.group_by("Date", "Symbol").len().filter(
+            pl.col("len") > 1
+        )
+        if not duplicate_keys.is_empty():
+            raise ValueError("Market data contains duplicate symbol-date rows")
 
         retrieved_at = datetime.now(timezone.utc).isoformat()
         company = (
@@ -62,27 +71,40 @@ class MarketDataRepository:
             subset="Symbol", keep="last", maintain_order=True
         )
 
-        with database_connection(self.path) as connection:
-            security_ids = self._upsert_securities(connection, symbols, provider)
-            rows = []
-            for row in market_data.to_dicts():
-                close = row.get("Close", row.get("Last Price"))
-                if close is None:
-                    raise ValueError(f"Missing close price for {row['Symbol']}")
-                rows.append(
-                    (
-                        security_ids[row["Symbol"]],
-                        _date_string(row["Date"]),
-                        provider,
-                        row.get("Open"),
-                        row.get("High"),
-                        row.get("Low"),
-                        close,
-                        row.get("Adjusted Close"),
-                        row.get("Volume"),
-                        retrieved_at,
-                    )
+        bars = []
+        for row in market_data.to_dicts():
+            close = row.get("Close")
+            if close is None:
+                close = row.get("Last Price")
+            if close is None:
+                raise ValueError(f"Missing close price for {row['Symbol']}")
+            open_price = _positive_optional(row.get("Open"), "open")
+            high = _positive_optional(row.get("High"), "high")
+            low = _positive_optional(row.get("Low"), "low")
+            close = _positive(close, "close")
+            adjusted_close = _positive_optional(
+                row.get("Adjusted Close"), "adjusted close"
+            )
+            volume = _volume(row.get("Volume"))
+            _validate_ohlc(open_price, high, low, close)
+            bars.append(
+                (
+                    row["Symbol"],
+                    _date_string(row["Date"]),
+                    provider,
+                    open_price,
+                    high,
+                    low,
+                    close,
+                    adjusted_close,
+                    volume,
+                    retrieved_at,
                 )
+            )
+
+        with database_connection(self.path) as connection:
+            security_ids = self._upsert_securities(connection, symbols)
+            rows = [(security_ids[bar[0]], *bar[1:]) for bar in bars]
             connection.executemany(
                 """
                 INSERT INTO daily_bars(
@@ -100,13 +122,6 @@ class MarketDataRepository:
                 """,
                 rows,
             )
-            if universe is not None:
-                self._save_universe(
-                    connection,
-                    universe,
-                    security_ids,
-                    observed_on or date.today(),
-                )
         return len(rows)
 
     def load(
@@ -127,11 +142,18 @@ class MarketDataRepository:
             return _empty_market_data(selected)
 
         conditions = ["b.provider = ?"]
-        parameters: list[object] = [provider]
+        parameters: list[object] = [provider.strip().lower()]
         if symbols is not None:
+            symbols = list(
+                dict.fromkeys(
+                    symbol.strip().upper() for symbol in symbols if symbol.strip()
+                )
+            )
+            if not symbols:
+                return _empty_market_data(selected)
             placeholders = ", ".join("?" for _ in symbols)
             conditions.append(f"s.symbol IN ({placeholders})")
-            parameters.extend(symbol.upper() for symbol in symbols)
+            parameters.extend(symbols)
         if start is not None:
             conditions.append("b.session_date >= ?")
             parameters.append(start.isoformat())
@@ -179,6 +201,10 @@ class MarketDataRepository:
     ) -> None:
         self.initialize()
         _require_columns(constituents, {"Symbol"})
+        universe = universe.strip()
+        if not universe:
+            raise ValueError("Universe is required")
+        constituents = _normalize_symbols(constituents)
         company = (
             pl.col("Company")
             if "Company" in constituents.columns
@@ -225,43 +251,20 @@ class MarketDataRepository:
     def _upsert_securities(
         connection,
         symbols: pl.DataFrame,
-        provider: str | None = None,
     ) -> dict[str, str]:
         security_ids = {}
         for row in symbols.to_dicts():
             symbol = row["Symbol"].strip().upper()
-            existing = connection.execute(
-                "SELECT id FROM securities WHERE symbol = ?", (symbol,)
-            ).fetchone()
-            security_id = existing["id"] if existing else str(uuid.uuid4())
-            connection.execute(
+            security_id = connection.execute(
                 """
                 INSERT INTO securities(id, symbol, company)
                 VALUES (?, ?, ?)
                 ON CONFLICT(symbol) DO UPDATE SET
-                    company = COALESCE(excluded.company, securities.company),
-                    updated_at = CURRENT_TIMESTAMP
+                    company = COALESCE(excluded.company, securities.company)
+                RETURNING id
                 """,
-                (security_id, symbol, row["Company"]),
-            )
-            security_id = connection.execute(
-                "SELECT id FROM securities WHERE symbol = ?", (symbol,)
+                (str(uuid.uuid4()), symbol, row["Company"]),
             ).fetchone()["id"]
-            if provider is not None:
-                provider_symbol = (
-                    symbol.replace(".", "-") if provider == "yahoo" else symbol
-                )
-                connection.execute(
-                    """
-                    INSERT INTO provider_symbols(
-                        provider, provider_symbol, security_id
-                    ) VALUES (?, ?, ?)
-                    ON CONFLICT(provider, provider_symbol) DO UPDATE SET
-                        security_id = excluded.security_id,
-                        active = 1
-                    """,
-                    (provider, provider_symbol, security_id),
-                )
             security_ids[row["Symbol"]] = security_id
         return security_ids
 
@@ -273,8 +276,8 @@ class MarketDataRepository:
         observed_on: date,
     ) -> None:
         connection.execute(
-            "INSERT OR IGNORE INTO universes(id, name) VALUES (?, ?)",
-            (universe, universe),
+            "INSERT OR IGNORE INTO universes(id) VALUES (?)",
+            (universe,),
         )
         connection.execute(
             """
@@ -307,9 +310,64 @@ def _require_columns(frame: pl.DataFrame, required: set[str]) -> None:
         raise ValueError(f"Missing market data columns: {', '.join(sorted(missing))}")
 
 
+def _normalize_symbols(frame: pl.DataFrame) -> pl.DataFrame:
+    normalized = frame.with_columns(
+        pl.col("Symbol").str.strip_chars().str.to_uppercase()
+    )
+    invalid = normalized.filter(
+        pl.col("Symbol").is_null()
+        | (pl.col("Symbol").str.len_chars() == 0)
+        | (pl.col("Symbol").str.len_chars() > 32)
+    )
+    if not invalid.is_empty():
+        raise ValueError("Symbols must contain between 1 and 32 characters")
+    return normalized
+
+
+def _positive(value: object, label: str) -> float:
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(f"Market data {label} must be finite and positive")
+    return number
+
+
+def _positive_optional(value: object | None, label: str) -> float | None:
+    return None if value is None else _positive(value, label)
+
+
+def _volume(value: object | None) -> int | None:
+    if value is None:
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number < 0 or not number.is_integer():
+        raise ValueError("Market data volume must be a non-negative integer")
+    return int(number)
+
+
+def _validate_ohlc(
+    open_price: float | None,
+    high: float | None,
+    low: float | None,
+    close: float,
+) -> None:
+    if high is not None and low is not None and high < low:
+        raise ValueError("Market data high cannot be below low")
+    if high is not None and (
+        (open_price is not None and high < open_price) or high < close
+    ):
+        raise ValueError("Market data high cannot be below open or close")
+    if low is not None and (
+        (open_price is not None and low > open_price) or low > close
+    ):
+        raise ValueError("Market data low cannot be above open or close")
+
+
 def _date_string(value: date | datetime | str) -> str:
-    if isinstance(value, datetime):
-        return value.date().isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    return date.fromisoformat(value).isoformat()
+    try:
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        return date.fromisoformat(value).isoformat()
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"Invalid market data date: {value}") from error

@@ -1,8 +1,10 @@
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
+
+import polars as pl
 
 from quant.cli import (
     GREEN,
@@ -47,6 +49,33 @@ class CliTests(unittest.TestCase):
         run_market.assert_called_once()
         args = run_market.call_args.args[0]
         self.assertEqual(args.symbols, ["AAPL"])
+
+    @patch("quant.cli.analyze_symbols")
+    @patch("quant.cli.get_index_symbols", return_value=["AAPL"])
+    def test_allows_partial_provider_results_for_index_analysis(
+        self,
+        get_index_symbols,
+        analyze_symbols,
+    ) -> None:
+        analyze_symbols.return_value = pl.DataFrame(
+            schema={
+                "Symbol": pl.String,
+                "Date": pl.Date,
+                "Close": pl.Float64,
+                "Daily Change": pl.Float64,
+                "Daily Change %": pl.Float64,
+                "SMA 5": pl.Float64,
+                "Rolling High 5": pl.Float64,
+                "Rolling Low 5": pl.Float64,
+                "Volume SMA 5": pl.Float64,
+                "Relative Volume 5": pl.Float64,
+            }
+        )
+
+        with redirect_stdout(StringIO()), patch("quant.cli._print_table"):
+            main(["market", "--index", "--windows", "5", "--price", "close"])
+
+        self.assertTrue(analyze_symbols.call_args.kwargs["allow_missing"])
 
     def test_requires_a_command(self) -> None:
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as error:

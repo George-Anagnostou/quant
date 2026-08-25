@@ -15,9 +15,10 @@ correctness and provenance therefore take priority over adding more indicators.
 ## Architecture
 
 SQLite is the authoritative store for users, portfolios, watchlists, market
-data, universe membership, and ingestion history. Polars remains the analysis
-engine. FastAPI is the primary product contract for the web UI, CLI, and custom
-consumers.
+data, and universe membership. Polars remains the analysis engine. FastAPI is
+the primary product contract for the web UI, CLI, and custom consumers. Durable
+ingestion state will be added with the synchronization pipeline rather than
+speculatively stored before that pipeline exists.
 
 ```text
 yfinance / future providers
@@ -40,7 +41,8 @@ requests. Ingestion and analysis are separate operations.
 
 ## Initial Decisions
 
-- Support multiple users while keeping initial authentication simple.
+- Keep repositories user-scoped and add Clerk authentication before exposing
+  the application beyond loopback.
 - Permanently store end-of-day market data only.
 - Backfill ten years of daily history for tracked equities.
 - Continue using yfinance behind a replaceable provider adapter.
@@ -83,16 +85,16 @@ approximately 6 to 8 PM Eastern. Each run begins around ten trading sessions
 before the latest stored session so provider corrections are captured. The
 operation must be idempotent and catch up automatically after downtime.
 
-Adding a previously untracked security stores the user action immediately and
-creates a durable synchronization request. Historical downloads happen outside
-the API request.
+The future synchronization pipeline will enqueue durable work when a previously
+untracked security is added. Historical downloads will then happen outside the
+API request.
 
 ### Retention Policy
 
 - Retain acquired daily OHLCV and adjusted prices indefinitely.
 - Retain portfolio and cash-flow records indefinitely.
 - Retain universe membership observations indefinitely.
-- Retain ingestion audit records and unresolved data-quality issues.
+- Retain future ingestion audit records and unresolved data-quality issues.
 - Do not persist intraday quotes or bars initially.
 
 ## SQLite Data Model
@@ -100,28 +102,24 @@ the API request.
 | Table | Purpose |
 | --- | --- |
 | `users` | Application identities |
-| `api_tokens` | Hashed personal access tokens |
 | `positions` | Current portfolio entries owned by a user |
 | `watchlist` | User-owned tracked securities |
 | `securities` | Stable internal security identities |
-| `provider_symbols` | Provider-specific symbol mappings |
 | `daily_bars` | Provider-attributed daily OHLCV observations |
 | `universes` | Configured market universes |
 | `universe_memberships` | Observed universe membership history |
-| `ingestion_runs` | Synchronization audit records |
-| `ingestion_issues` | Rejected or suspicious observations |
-| `sync_requests` | Durable work for newly tracked securities |
 
 The daily-bar identity is `security_id + session_date + provider`. Provider is
 part of the key so a new source cannot silently overwrite existing history.
 Company metadata belongs to `securities`, not every bar. Latest price is derived
-from the latest raw close.
+from the latest raw close. Provider-symbol mappings, ingestion runs, issues, and
+sync requests should be introduced with Phase 3, when code will consume them.
 
 ## Validation
 
-Reject batches containing unknown symbol mappings, duplicate canonical keys,
-invalid dates, nonpositive OHLC prices, negative volume, impossible OHLC
-relationships, or missing required fields.
+Reject batches containing unsupported symbols, duplicate canonical keys, invalid
+dates, nonpositive OHLC prices, negative volume, impossible OHLC relationships,
+or missing required fields.
 
 Record warnings for extreme returns, unusual volume, adjustment discontinuities,
 missing sessions, and material differences between providers. Statistical
@@ -174,16 +172,10 @@ for users, metadata, jobs, and recent data in a future hybrid design.
 
 ## Authentication
 
-Personal access tokens are the initial authentication mechanism for the CLI and
-custom consumers. Tokens require high entropy, user ownership, optional scopes,
-expiration, revocation, a visible identifier prefix, and a last-used timestamp.
-Only token hashes are stored. Tokens are sent in the `Authorization: Bearer`
-header over HTTPS.
-
-Browser authentication should move to OIDC and secure HTTP-only sessions rather
-than storing long-lived personal tokens in browser storage. Cloudflare Tunnel is
-a simple home-server exposure option; Caddy with automatic HTTPS is suitable for
-a VPS.
+The current API uses the bootstrap `local-admin` identity and must remain bound
+to loopback. Clerk authentication is planned before network exposure. FastAPI
+will derive repository ownership from the authenticated request rather than
+accepting user identity in request bodies.
 
 ## API Contract
 
@@ -226,14 +218,12 @@ that bridge with explicit synchronization and validation.
 
 ### Phase 1: SQLite Foundation
 
-1. Introduce shared SQLite connections and schema migrations.
-2. Add users and API-token storage.
-3. Add user ownership to positions and watchlists.
-4. Assign existing local data to a bootstrap development user.
-5. Add securities, provider symbols, daily bars, ingestion records, universes,
-   issues, and synchronization requests.
-6. Add a SQLite market-data repository returning Polars DataFrames.
-7. Test initialization and migrations with temporary databases.
+1. Introduce shared SQLite connections and fresh-schema initialization.
+2. Add a bootstrap development user and user ownership to positions and
+   watchlists.
+3. Add securities, provider-separated daily bars, and dated universes.
+4. Add a SQLite market-data repository returning Polars DataFrames.
+5. Test initialization and concurrency with temporary databases.
 
 ### Phase 2: Replace Parquet
 
@@ -254,7 +244,7 @@ that bridge with explicit synchronization and validation.
 
 ### Phase 4: API v1
 
-1. Add bearer-token authentication and user scoping.
+1. Add Clerk authentication to the existing user-scoped repositories.
 2. Add typed, versioned API endpoints.
 3. Serve daily history and technical analysis only from SQLite.
 4. Return freshness and provenance metadata.

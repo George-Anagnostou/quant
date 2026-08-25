@@ -110,6 +110,9 @@ The versioned, authenticated API remains planned work. See
 keys, short transactions, and provider-separated daily bars. Generated database,
 WAL, and shared-memory files are ignored by Git.
 
+This pre-release schema starts fresh and does not migrate older local database
+layouts. Delete `data/quant.db*` after switching from an earlier branch.
+
 ## Tests
 
 ```sh

@@ -77,6 +77,28 @@ class PortfolioInputTests(unittest.TestCase):
         load_portfolio_market_data.assert_called_once()
         self.assertEqual(load_portfolio_market_data.call_args.args[0], ["AAPL"])
 
+    @patch("quant.quotes.get_market_history")
+    def test_does_not_hide_storage_failures_for_optional_quotes(
+        self,
+        get_market_history,
+    ) -> None:
+        get_market_history.return_value = pl.DataFrame(
+            {
+                "Date": [date(2026, 8, 21)],
+                "Symbol": ["AAPL"],
+                "Last Price": [125.0],
+            }
+        )
+        with TemporaryDirectory() as directory:
+            repository = MarketDataRepository(Path(directory) / "quant.db")
+            with patch.object(
+                repository,
+                "save",
+                side_effect=ValueError("invalid provider data"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "invalid provider data"):
+                    load_portfolio_market_data(["AAPL"], repository)
+
 
 if __name__ == "__main__":
     unittest.main()

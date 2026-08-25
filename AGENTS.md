@@ -14,7 +14,7 @@
 
 - The `quant` console script resolves to `main()` in `src/quant/cli.py`; `src/quant/__init__.py` has no CLI logic.
 - `src/quant/market_data.py` owns constituent discovery, Yahoo batching, symbol normalization (`BRK.B` -> `BRK-B`), and conversion to Polars.
-- `src/quant/database.py` owns SQLite connections and schema migrations. `src/quant/market_store.py` owns security, universe, and provider-separated daily-bar persistence and returns Polars frames.
+- `src/quant/database.py` owns SQLite connections and fresh-schema initialization. `src/quant/market_store.py` owns security, universe, and provider-separated daily-bar persistence and returns Polars frames.
 - `src/quant/analysis.py` contains pure Polars calculations; `src/quant/portfolio.py` owns stored-first portfolio quote resolution and shared position analysis.
 - `src/quant/quotes.py` is the shared stored-first resolver used by portfolio and market analysis. `src/quant/market_analysis.py` owns market-analysis orchestration, not indicator math.
 - `src/quant/dashboard/services.py` adapts shared Polars analysis for the API. `src/quant/user_data.py` owns user-scoped positions and watchlists; FastAPI routes must not read or write persistence directly.

@@ -32,11 +32,13 @@ def get_sp500_constituents() -> pl.DataFrame:
         S_AND_P_500_CONSTITUENTS_URL,
         headers={"User-Agent": "quant/0.1 (portfolio research)"},
     )
-    with urlopen(request, timeout=30) as response:
-        html = response.read()
-
-    document = lxml_html.fromstring(html)
-    table = document.get_element_by_id("constituents")
+    try:
+        with urlopen(request, timeout=30) as response:
+            html = response.read()
+        document = lxml_html.fromstring(html)
+        table = document.get_element_by_id("constituents")
+    except Exception as error:
+        raise RuntimeError("Unable to load S&P 500 constituents") from error
     rows = []
     for row in table.xpath(".//tbody/tr"):
         cells = row.xpath("./td")
@@ -59,7 +61,9 @@ def get_market_history(
     symbols: Iterable[str],
     start: date | None = None,
 ) -> pl.DataFrame:
-    symbols = list(dict.fromkeys(symbols))
+    symbols = list(
+        dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip())
+    )
     if not symbols:
         return pl.DataFrame(schema=MARKET_DATA_SCHEMA)
 
@@ -77,7 +81,10 @@ def get_market_history(
         download_options["period"] = "5d"
     else:
         download_options["start"] = start
-    history = yf.download(**download_options)
+    try:
+        history = yf.download(**download_options)
+    except Exception as error:
+        raise RuntimeError("Yahoo market data request failed") from error
     if history.empty:
         raise RuntimeError(f"No market data returned for: {', '.join(symbols)}")
 
@@ -108,6 +115,11 @@ def get_market_history(
                 name: columns.at[trading_date, yahoo_symbol]
                 for name, columns in fields.items()
             }
+            close = float(price)
+            if not math.isfinite(close) or close <= 0:
+                raise RuntimeError(
+                    f"Yahoo returned an invalid close for {index_symbol}"
+                )
             rows.append(
                 {
                     "Date": session_date,
@@ -115,15 +127,10 @@ def get_market_history(
                     "Open": _optional_float(values["Open"]),
                     "High": _optional_float(values["High"]),
                     "Low": _optional_float(values["Low"]),
-                    "Close": float(price),
+                    "Close": close,
                     "Adjusted Close": _optional_float(values["Adjusted Close"]),
-                    "Last Price": float(price),
-                    "Volume": (
-                        None
-                        if values["Volume"] is None
-                        or math.isnan(float(values["Volume"]))
-                        else int(values["Volume"])
-                    ),
+                    "Last Price": close,
+                    "Volume": _optional_volume(values["Volume"]),
                 }
             )
 
@@ -134,7 +141,9 @@ def get_market_history(
 
 
 def get_latest_market_data(symbols: Iterable[str]) -> pl.DataFrame:
-    symbols = list(dict.fromkeys(symbols))
+    symbols = list(
+        dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip())
+    )
     if not symbols:
         return pl.DataFrame(
             schema={
@@ -197,6 +206,17 @@ def _optional_float(value: object) -> float | None:
     if value is None or math.isnan(float(value)):
         return None
     return float(value)
+
+
+def _optional_volume(value: object) -> int | None:
+    if value is None:
+        return None
+    number = float(value)
+    if math.isnan(number):
+        return None
+    if not math.isfinite(number) or number < 0 or not number.is_integer():
+        raise RuntimeError("Yahoo returned invalid volume")
+    return int(number)
 
 
 def _is_completed_daily_bar(

@@ -320,7 +320,7 @@ async function renderStock(symbol, requestId) {
       ["3M", 90],
       ["6M", 180],
       ["1Y", 365],
-      ["All stored", null],
+      ["All loaded", null],
     ];
 
     root.replaceChildren(

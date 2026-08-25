@@ -21,7 +21,7 @@
   both CLI and dashboard.
 - `market_analysis.py` owns shared technical-analysis orchestration used by CLI
   and API.
-- `database.py` owns shared SQLite connections and schema migrations.
+- `database.py` owns shared SQLite connections and fresh-schema initialization.
 - `market_store.py` owns securities, universes, and provider-aware daily bars.
 - `quotes.py` owns stored daily-bar resolution and temporary missing-only
   downloads until scheduled ingestion is implemented.

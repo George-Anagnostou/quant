@@ -1,3 +1,4 @@
+import math
 import unittest
 from datetime import date
 
@@ -93,6 +94,25 @@ class PortfolioAnalysisTests(unittest.TestCase):
         self.assertEqual(result.get_column("Account").to_list(), ["taxable", "roth"])
         self.assertEqual(result.get_column("Market Value").to_list(), [140.0, 60.0])
         self.assertEqual(result.get_column("Weight %").to_list(), [70.0, 30.0])
+
+    def test_rejects_non_finite_portfolio_values(self) -> None:
+        positions = pl.DataFrame(
+            {
+                "Symbol": ["AAA"],
+                "Quantity": [math.inf],
+                "Average Cost": [10.0],
+            }
+        )
+        market_history = pl.DataFrame(
+            {
+                "Date": [date(2026, 8, 21)],
+                "Symbol": ["AAA"],
+                "Last Price": [15.0],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "quantities must be positive"):
+            analyze_portfolio(positions, market_history)
 
 
 class MarketAnalysisTests(unittest.TestCase):

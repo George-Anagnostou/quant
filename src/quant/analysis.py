@@ -3,18 +3,6 @@ import polars as pl
 from quant.market_data import latest_market_snapshot
 
 
-MARKET_ANALYSIS_COLUMNS = {
-    "Date",
-    "Symbol",
-    "Open",
-    "High",
-    "Low",
-    "Close",
-    "Adjusted Close",
-    "Volume",
-}
-
-
 def analyze_portfolio(
     positions: pl.DataFrame,
     market_history: pl.DataFrame,
@@ -30,6 +18,8 @@ def analyze_portfolio(
         | (pl.col("Average Cost") < 0)
         | pl.col("Quantity").is_null()
         | pl.col("Average Cost").is_null()
+        | ~pl.col("Quantity").is_finite()
+        | ~pl.col("Average Cost").is_finite()
     ).height:
         raise ValueError("Portfolio quantities must be positive and costs non-negative")
 
@@ -133,7 +123,10 @@ def analyze_market_history(
     windows: list[int],
     price_column: str,
 ) -> pl.DataFrame:
-    _require_columns(market_history, MARKET_ANALYSIS_COLUMNS, "market history")
+    required = {"Date", "Symbol", "High", "Low", "Close", "Volume"}
+    if price_column == "Adjusted Close":
+        required.add("Adjusted Close")
+    _require_columns(market_history, required, "market history")
     windows = list(dict.fromkeys(windows))
     if not windows or any(
         not isinstance(window, int) or window <= 0 for window in windows

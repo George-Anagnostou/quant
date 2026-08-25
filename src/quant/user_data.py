@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import sqlite3
 import uuid
 from datetime import date
 from pathlib import Path
@@ -17,7 +16,7 @@ from quant.database import (
 )
 
 DEFAULT_USER_DATA_PATH = DEFAULT_DATABASE_PATH
-DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "GOOGL", "TSLA"]
+MAX_SYMBOL_LENGTH = 32
 
 
 class UserDataRepository:
@@ -37,18 +36,6 @@ class UserDataRepository:
             ).fetchone()
             if user is None:
                 raise ValueError(f"Unknown user: {self.user_id}")
-            if not self._is_seeded(connection, f"watchlist:{self.user_id}"):
-                connection.executemany(
-                    """
-                    INSERT OR IGNORE INTO watchlist(user_id, symbol, sort_order)
-                    VALUES (?, ?, ?)
-                    """,
-                    [
-                        (self.user_id, symbol, index)
-                        for index, symbol in enumerate(DEFAULT_WATCHLIST)
-                    ],
-                )
-                self._mark_seeded(connection, f"watchlist:{self.user_id}")
 
     def list_positions(self) -> list[dict]:
         self.initialize()
@@ -114,6 +101,8 @@ class UserDataRepository:
         }
         if not position["symbol"]:
             raise ValueError("Symbol is required")
+        if len(position["symbol"]) > MAX_SYMBOL_LENGTH:
+            raise ValueError(f"Symbol cannot exceed {MAX_SYMBOL_LENGTH} characters")
         if (
             not math.isfinite(position["quantity"])
             or not math.isfinite(position["average_cost"])
@@ -166,6 +155,8 @@ class UserDataRepository:
         symbol = symbol.strip().upper()
         if not symbol:
             raise ValueError("Symbol is required")
+        if len(symbol) > MAX_SYMBOL_LENGTH:
+            raise ValueError(f"Symbol cannot exceed {MAX_SYMBOL_LENGTH} characters")
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
@@ -200,16 +191,13 @@ class UserDataRepository:
                 """,
                 (self.user_id,),
             ).fetchone()[0]
-            try:
-                connection.execute(
-                    """
-                    INSERT OR IGNORE INTO watchlist(user_id, symbol, sort_order)
-                    VALUES (?, ?, ?)
-                    """,
-                    (self.user_id, symbol, next_order),
-                )
-            except sqlite3.IntegrityError as error:
-                raise ValueError(str(error)) from error
+            connection.execute(
+                """
+                INSERT INTO watchlist(user_id, symbol, sort_order)
+                VALUES (?, ?, ?)
+                """,
+                (self.user_id, symbol, next_order),
+            )
         return self.list_watchlist()
 
     def remove_watchlist(self, symbol: str) -> list[str]:
@@ -223,22 +211,6 @@ class UserDataRepository:
 
     def _connect(self):
         return database_connection(self.path)
-
-    @staticmethod
-    def _is_seeded(connection: sqlite3.Connection, key: str) -> bool:
-        return (
-            connection.execute(
-                "SELECT 1 FROM metadata WHERE key = ?", (f"seeded:{key}",)
-            ).fetchone()
-            is not None
-        )
-
-    @staticmethod
-    def _mark_seeded(connection: sqlite3.Connection, key: str) -> None:
-        connection.execute(
-            "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, '1')",
-            (f"seeded:{key}",),
-        )
 
 
 def _clean_optional(value: str | None) -> str | None:
