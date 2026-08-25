@@ -1,6 +1,7 @@
 // Quant Dashboard - EOD portfolio and technical analysis.
 
 const app = document.getElementById("app");
+const MAX_QUOTE_SYMBOLS = 20;
 
 const api = {
   quote: (symbol, refresh = false) =>
@@ -48,6 +49,16 @@ async function request(path, method = "GET", body) {
     throw new Error(detail);
   }
   return response.json();
+}
+
+async function fetchQuotes(symbols, refresh = false) {
+  const quotes = [];
+  for (let index = 0; index < symbols.length; index += MAX_QUOTE_SYMBOLS) {
+    const batch = symbols.slice(index, index + MAX_QUOTE_SYMBOLS);
+    const result = await api.quotes(batch, refresh);
+    quotes.push(...result.quotes);
+  }
+  return quotes;
 }
 
 function element(tag, attrs = {}, ...children) {
@@ -203,7 +214,7 @@ async function drawWatchlist(content, refresh = false) {
       return;
     }
 
-    const { quotes } = await api.quotes(symbols, refresh);
+    const quotes = await fetchQuotes(symbols, refresh);
     const quoteBySymbol = new Map(quotes.map((quote) => [quote.symbol, quote]));
     const body = element("tbody");
     for (const symbol of symbols) {
@@ -617,16 +628,18 @@ async function drawHoldings(totals, allocations, table, refresh = false) {
       element(
         "div",
         { class: "grid cols-4" },
-        metric("Cost basis", fmtMoney(summary.cost)),
-        metric("Market value", fmtMoney(summary.value)),
-        metric("Unrealized gain", fmtMoney(summary.gain), changeClass(summary.gain)),
-        metric("Return", fmtPercent(summary.gainPercent), changeClass(summary.gainPercent))
+        metric("Total cost basis", fmtMoney(summary.cost)),
+        metric("Priced market value", fmtMoney(summary.value)),
+        metric("Priced unrealized gain", fmtMoney(summary.gain), changeClass(summary.gain)),
+        metric("Priced return", fmtPercent(summary.gainPercent), changeClass(summary.gainPercent))
       ),
       unpriced.length
         ? element(
             "div",
             { class: "warning", role: "status" },
-            `Market values exclude unavailable symbols: ${unpriced.join(", ")}.`
+            `Priced metrics use ${fmtMoney(summary.pricedCost)} of ` +
+              `${fmtMoney(summary.cost)} total cost basis. Unavailable: ` +
+              `${unpriced.join(", ")}.`
           )
         : null
     );
