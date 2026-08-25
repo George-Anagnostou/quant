@@ -244,6 +244,9 @@ class MarketDataRepository:
                 """,
                 (security_id, symbol, row["Company"]),
             )
+            security_id = connection.execute(
+                "SELECT id FROM securities WHERE symbol = ?", (symbol,)
+            ).fetchone()["id"]
             if provider is not None:
                 connection.execute(
                     """
@@ -270,9 +273,16 @@ class MarketDataRepository:
             "INSERT OR IGNORE INTO universes(id, name) VALUES (?, ?)",
             (universe, universe),
         )
+        connection.execute(
+            """
+            DELETE FROM universe_memberships
+            WHERE universe_id = ? AND observed_on = ?
+            """,
+            (universe, observed_on.isoformat()),
+        )
         connection.executemany(
             """
-            INSERT OR IGNORE INTO universe_memberships(
+            INSERT INTO universe_memberships(
                 universe_id, security_id, observed_on, sort_order
             ) VALUES (?, ?, ?, ?)
             """,

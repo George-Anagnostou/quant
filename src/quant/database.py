@@ -8,19 +8,22 @@ from pathlib import Path
 
 DEFAULT_DATABASE_PATH = Path("data/quant.db")
 LOCAL_ADMIN_USER_ID = "local-admin"
+SCHEMA_VERSION = 2
 
 
 def initialize_database(path: Path = DEFAULT_DATABASE_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with _open_connection(path) as connection:
         version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if version >= SCHEMA_VERSION:
+            return
+        # Another request may migrate while this connection waits for the lock.
+        connection.execute("BEGIN IMMEDIATE")
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
         if version < 1:
-            connection.execute("BEGIN IMMEDIATE")
             _migrate_user_data(connection)
             connection.execute("PRAGMA user_version = 1")
         if version < 2:
-            if not connection.in_transaction:
-                connection.execute("BEGIN IMMEDIATE")
             _migrate_market_data(connection)
             connection.execute("PRAGMA user_version = 2")
 
@@ -92,6 +95,16 @@ def _migrate_user_data(connection: sqlite3.Connection) -> None:
     )
     _migrate_positions(connection)
     _migrate_watchlist(connection)
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO metadata(key, value)
+        SELECT ?, value FROM metadata WHERE key = ?
+        """,
+        (
+            f"seeded:watchlist:{LOCAL_ADMIN_USER_ID}",
+            "seeded:watchlist",
+        ),
+    )
 
 
 def _migrate_positions(connection: sqlite3.Connection) -> None:
@@ -136,7 +149,7 @@ def _create_positions(connection: sqlite3.Connection) -> None:
     )
     connection.execute(
         """
-        CREATE INDEX positions_user_id_idx ON positions(user_id);
+        CREATE INDEX IF NOT EXISTS positions_user_id_idx ON positions(user_id);
         """
     )
 
@@ -293,7 +306,7 @@ def _migrate_market_data(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
     connection.execute(
         """
-        CREATE INDEX watchlist_user_order_idx
+        CREATE INDEX IF NOT EXISTS watchlist_user_order_idx
         ON watchlist(user_id, sort_order);
         """
     )

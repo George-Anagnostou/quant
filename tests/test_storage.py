@@ -1,4 +1,5 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -76,6 +77,34 @@ class MarketDataStorageTests(unittest.TestCase):
                 repository.list_universe_symbols("sp500"),
                 ["MSFT", "AAPL"],
             )
+
+            repository.save_universe(
+                "sp500",
+                market_data.filter(pl.col("Symbol") == "AAPL"),
+            )
+            self.assertEqual(repository.list_universe_symbols("sp500"), ["AAPL"])
+
+    def test_concurrent_first_save_uses_the_persisted_security_id(self) -> None:
+        market_data = pl.DataFrame(
+            {
+                "Date": [date(2026, 8, 21)],
+                "Symbol": ["AAPL"],
+                "Close": [225.50],
+            }
+        )
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "quant.db"
+
+            def save() -> None:
+                MarketDataRepository(path).save(market_data)
+
+            with ThreadPoolExecutor(max_workers=12) as executor:
+                futures = [executor.submit(save) for _ in range(24)]
+                for future in futures:
+                    future.result()
+
+            self.assertEqual(MarketDataRepository(path).load().height, 1)
 
 
 if __name__ == "__main__":

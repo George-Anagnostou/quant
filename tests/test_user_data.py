@@ -1,9 +1,14 @@
 import sqlite3
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from quant.database import LOCAL_ADMIN_USER_ID, database_connection
+from quant.database import (
+    LOCAL_ADMIN_USER_ID,
+    database_connection,
+    initialize_database,
+)
 from quant.user_data import DEFAULT_WATCHLIST, UserDataRepository
 
 
@@ -28,21 +33,43 @@ class UserDataRepositoryTests(unittest.TestCase):
                         symbol TEXT PRIMARY KEY,
                         sort_order INTEGER NOT NULL
                     );
+                    CREATE TABLE metadata (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );
                     INSERT INTO positions(id, symbol, quantity, average_cost)
                     VALUES ('position-1', 'AAPL', 2, 100);
                     INSERT INTO watchlist(symbol, sort_order) VALUES ('MSFT', 0);
+                    INSERT INTO metadata(key, value)
+                    VALUES ('seeded:watchlist', '1');
                     """
                 )
 
             repository = UserDataRepository(path)
 
             self.assertEqual(repository.list_positions()[0]["symbol"], "AAPL")
-            self.assertIn("MSFT", repository.list_watchlist())
+            self.assertEqual(repository.list_watchlist(), ["MSFT"])
             with database_connection(path) as connection:
                 owner = connection.execute(
                     "SELECT user_id FROM positions WHERE id = 'position-1'"
                 ).fetchone()[0]
             self.assertEqual(owner, LOCAL_ADMIN_USER_ID)
+
+    def test_initializes_concurrent_requests_once(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "quant.db"
+            with ThreadPoolExecutor(max_workers=12) as executor:
+                futures = [
+                    executor.submit(initialize_database, path) for _ in range(24)
+                ]
+                for future in futures:
+                    future.result()
+
+            with database_connection(path) as connection:
+                self.assertEqual(
+                    connection.execute("PRAGMA user_version").fetchone()[0],
+                    2,
+                )
 
     def test_scopes_user_data(self) -> None:
         with TemporaryDirectory() as directory:
