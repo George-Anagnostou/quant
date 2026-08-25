@@ -21,6 +21,7 @@ def load_portfolio_market_data(
         repository,
         MARKET_DATA_COLUMNS,
         refresh=refresh,
+        allow_missing=True,
     )
 
 

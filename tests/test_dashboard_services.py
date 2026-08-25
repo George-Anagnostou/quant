@@ -13,6 +13,39 @@ from quant.user_data import UserDataRepository
 
 
 class DashboardServiceTests(unittest.TestCase):
+    @patch("quant.quotes.get_market_history", side_effect=RuntimeError("not found"))
+    def test_keeps_unpriced_holdings_visible(self, get_market_history) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "quant.db"
+            market_repository = MarketDataRepository(path)
+            market_repository.save(
+                pl.DataFrame(
+                    {
+                        "Date": [date(2026, 8, 20), date(2026, 8, 21)],
+                        "Symbol": ["AAPL", "AAPL"],
+                        "Close": [100.0, 125.0],
+                        "Volume": [1_000, 2_000],
+                    }
+                )
+            )
+            repository = UserDataRepository(path)
+            repository.add_position("AAPL", 1, 100)
+            repository.add_position("MISSING", 1, 50)
+
+            result = DashboardService(repository, market_repository).holdings()
+
+        self.assertEqual(len(result["holdings"]), 2)
+        self.assertEqual(result["unpricedSymbols"], ["MISSING"])
+        missing = next(
+            holding
+            for holding in result["holdings"]
+            if holding["symbol"] == "MISSING"
+        )
+        self.assertFalse(missing["marketDataAvailable"])
+        self.assertIsNone(missing["marketValue"])
+        self.assertEqual(result["totals"]["cost"], 150.0)
+        self.assertEqual(result["totals"]["pricedCost"], 100.0)
+
     def test_limits_batched_quote_requests(self) -> None:
         service = DashboardService()
 

@@ -48,6 +48,7 @@ class DashboardService:
             ["Date", "Symbol", "Close"],
             minimum_sessions=2,
             refresh=refresh,
+            allow_missing=True,
         )
         history = self.market_repository.load(
             symbols,
@@ -99,6 +100,7 @@ class DashboardService:
                 "holdings": [],
                 "totals": {
                     "cost": 0.0,
+                    "pricedCost": 0.0,
                     "value": 0.0,
                     "gain": 0.0,
                     "gainPercent": None,
@@ -108,6 +110,7 @@ class DashboardService:
                     "assetClass": [],
                     "sector": [],
                 },
+                "unpricedSymbols": [],
             }
 
         analysis = analyze_positions(
@@ -117,10 +120,17 @@ class DashboardService:
         )
         summary = summarize_portfolio(analysis).row(0, named=True)
         holdings = [self._holding_response(row) for row in analysis.to_dicts()]
+        unpriced_symbols = (
+            analysis.filter(pl.col("Last Price").is_null())
+            .get_column("Symbol")
+            .unique(maintain_order=True)
+            .to_list()
+        )
         return {
             "holdings": holdings,
             "totals": {
                 "cost": summary["Cost Basis"],
+                "pricedCost": summary["Priced Cost Basis"],
                 "value": summary["Market Value"],
                 "gain": summary["Gain/Loss"],
                 "gainPercent": summary["Gain/Loss %"],
@@ -130,6 +140,7 @@ class DashboardService:
                 "assetClass": self._allocation_response(analysis, "Asset Class"),
                 "sector": self._allocation_response(analysis, "Sector"),
             },
+            "unpricedSymbols": unpriced_symbols,
         }
 
     def add_holding(
@@ -208,6 +219,7 @@ class DashboardService:
 
     @staticmethod
     def _holding_response(row: dict) -> dict:
+        as_of = row["As Of"]
         return {
             "id": row["ID"],
             "symbol": row["Symbol"],
@@ -219,7 +231,8 @@ class DashboardService:
             "gain": row["Gain/Loss"],
             "gainPercent": row["Gain/Loss %"],
             "weightPercent": row["Weight %"],
-            "asOf": row["As Of"].isoformat(),
+            "asOf": as_of.isoformat() if as_of is not None else None,
+            "marketDataAvailable": row["Last Price"] is not None,
             "account": row["Account"],
             "assetClass": row["Asset Class"],
             "sector": row["Sector"],
@@ -228,7 +241,10 @@ class DashboardService:
 
     @staticmethod
     def _allocation_response(analysis: pl.DataFrame, dimension: str) -> list[dict]:
-        allocation = summarize_allocation(analysis, dimension)
+        priced = analysis.filter(pl.col("Market Value").is_not_null())
+        if priced.is_empty():
+            return []
+        allocation = summarize_allocation(priced, dimension)
         return [
             {
                 "name": row[dimension],

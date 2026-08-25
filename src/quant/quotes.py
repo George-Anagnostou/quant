@@ -14,6 +14,7 @@ def resolve_market_history(
     minimum_sessions: int = 1,
     refresh: bool = False,
     start: date | None = None,
+    allow_missing: bool = False,
 ) -> pl.DataFrame:
     symbols = list(dict.fromkeys(symbols))
     market_data = repository.load(
@@ -33,12 +34,16 @@ def resolve_market_history(
         symbols if refresh else [symbol for symbol in symbols if symbol not in available]
     )
     if symbols_to_download:
-        downloaded = (
-            get_market_history(symbols_to_download, start)
-            if start is not None
-            else get_market_history(symbols_to_download)
-        )
-        repository.save(downloaded)
+        try:
+            downloaded = (
+                get_market_history(symbols_to_download, start)
+                if start is not None
+                else get_market_history(symbols_to_download)
+            )
+            repository.save(downloaded)
+        except RuntimeError:
+            if not allow_missing:
+                raise
         market_data = repository.load(
             symbols,
             start=start,

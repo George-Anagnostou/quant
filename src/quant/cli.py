@@ -151,11 +151,14 @@ def _run_portfolio(args: argparse.Namespace) -> None:
     ).with_columns(
         pl.col("Quantity").map_elements(_quantity, return_dtype=pl.String),
         pl.col("Average Cost", "Last Price", "Market Value")
-        .map_elements(_currency, return_dtype=pl.String),
-        pl.col("Gain/Loss").map_elements(_colored_currency, return_dtype=pl.String),
+        .map_elements(_currency, return_dtype=pl.String)
+        .fill_null("N/A"),
+        pl.col("Gain/Loss")
+        .map_elements(_colored_currency, return_dtype=pl.String)
+        .fill_null("N/A"),
         pl.col("Gain/Loss %").map_elements(
             _colored_percentage, return_dtype=pl.String
-        ),
+        ).fill_null("N/A"),
         pl.col("Weight %")
         .map_elements(_percentage, return_dtype=pl.String)
         .fill_null("N/A"),
@@ -165,8 +168,12 @@ def _run_portfolio(args: argparse.Namespace) -> None:
     print(
         f"Market value: {_currency(summary['Market Value'])} | "
         f"Cost basis: {_currency(summary['Cost Basis'])} | "
-        f"Gain/loss: {_colored_currency(summary['Gain/Loss'])} ({formatted_return})"
+        f"Gain/loss: {_colored_currency(summary['Gain/Loss']) or 'N/A'} "
+        f"({formatted_return})"
     )
+    unpriced = analysis.filter(pl.col("Last Price").is_null()).get_column("Symbol")
+    if not unpriced.is_empty():
+        print(f"Market data unavailable for: {', '.join(unpriced.unique())}")
     _print_table(display, width=180)
 
 
@@ -260,7 +267,9 @@ def _quantity(value: float) -> str:
     return f"{value:,.4f}".rstrip("0").rstrip(".")
 
 
-def _currency(value: float) -> str:
+def _currency(value: float | None) -> str:
+    if value is None:
+        return "N/A"
     return f"-${abs(value):,.2f}" if value < 0 else f"${value:,.2f}"
 
 

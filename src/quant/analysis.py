@@ -39,9 +39,6 @@ def analyze_portfolio(
         "Last Price",
     )
     analysis = positions.join(quotes, on="Symbol", how="left", validate="m:1")
-    missing = analysis.filter(pl.col("Last Price").is_null()).get_column("Symbol")
-    if not missing.is_empty():
-        raise ValueError(f"Missing market data for: {', '.join(missing.to_list())}")
 
     analysis = (
         analysis.with_columns(
@@ -59,12 +56,14 @@ def analyze_portfolio(
         )
     )
     total_value = analysis.get_column("Market Value").sum()
-    if total_value is None or total_value <= 0:
-        raise ValueError("Portfolio market value must be positive")
-
-    return analysis.with_columns(
-        (pl.col("Market Value") / total_value * 100.0).alias("Weight %")
-    ).sort("Weight %", descending=True)
+    weight = (
+        pl.col("Market Value") / total_value * 100.0
+        if total_value is not None and total_value > 0
+        else pl.lit(None, dtype=pl.Float64)
+    )
+    return analysis.with_columns(weight.alias("Weight %")).sort(
+        "Weight %", descending=True, nulls_last=True
+    )
 
 
 def summarize_portfolio(analysis: pl.DataFrame) -> pl.DataFrame:
@@ -73,18 +72,30 @@ def summarize_portfolio(analysis: pl.DataFrame) -> pl.DataFrame:
         {"Cost Basis", "Market Value", "Gain/Loss"},
         "portfolio analysis",
     )
-    return (
-        analysis.select(
-            pl.col("Cost Basis").sum().alias("Cost Basis"),
-            pl.col("Market Value").sum().alias("Market Value"),
-            pl.col("Gain/Loss").sum().alias("Gain/Loss"),
-        )
-        .with_columns(
-            pl.when(pl.col("Cost Basis") > 0)
-            .then(pl.col("Gain/Loss") / pl.col("Cost Basis") * 100.0)
-            .otherwise(None)
-            .alias("Gain/Loss %")
-        )
+    return analysis.select(
+        pl.col("Cost Basis").sum().alias("Cost Basis"),
+        pl.when(pl.col("Market Value").is_not_null())
+        .then(pl.col("Cost Basis"))
+        .otherwise(None)
+        .sum()
+        .alias("Priced Cost Basis"),
+        pl.col("Market Value").sum().alias("Market Value"),
+        pl.col("Gain/Loss").sum().alias("Gain/Loss"),
+        pl.col("Market Value").count().alias("Priced Positions"),
+    ).with_columns(
+        pl.when(pl.col("Priced Positions") == 0)
+        .then(None)
+        .otherwise(pl.col("Market Value"))
+        .alias("Market Value"),
+        pl.when(pl.col("Priced Positions") == 0)
+        .then(None)
+        .otherwise(pl.col("Gain/Loss"))
+        .alias("Gain/Loss"),
+    ).with_columns(
+        pl.when(pl.col("Priced Cost Basis") > 0)
+        .then(pl.col("Gain/Loss") / pl.col("Priced Cost Basis") * 100.0)
+        .otherwise(None)
+        .alias("Gain/Loss %")
     )
 
 

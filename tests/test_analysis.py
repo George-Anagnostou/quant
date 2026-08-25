@@ -42,27 +42,41 @@ class PortfolioAnalysisTests(unittest.TestCase):
             pl.DataFrame(
                 {
                     "Cost Basis": [180.0],
+                    "Priced Cost Basis": [180.0],
                     "Market Value": [150.0],
                     "Gain/Loss": [-30.0],
+                    "Priced Positions": pl.Series([2], dtype=pl.UInt32),
                     "Gain/Loss %": [-100 / 6],
                 }
             ),
         )
 
-    def test_rejects_missing_market_data(self) -> None:
+    def test_preserves_positions_with_missing_market_data(self) -> None:
         positions = pl.DataFrame(
-            {"Symbol": ["AAA"], "Quantity": [1.0], "Average Cost": [10.0]}
+            {
+                "Symbol": ["AAA", "BBB"],
+                "Quantity": [1.0, 2.0],
+                "Average Cost": [10.0, 20.0],
+            }
         )
         market_history = pl.DataFrame(
-            schema={
-                "Date": pl.Date,
-                "Symbol": pl.String,
-                "Last Price": pl.Float64,
+            {
+                "Date": [date(2026, 8, 21)],
+                "Symbol": ["AAA"],
+                "Last Price": [15.0],
             }
         )
 
-        with self.assertRaisesRegex(ValueError, "Missing market data for: AAA"):
-            analyze_portfolio(positions, market_history)
+        result = analyze_portfolio(positions, market_history)
+        summary = summarize_portfolio(result).row(0, named=True)
+
+        missing = result.filter(pl.col("Symbol") == "BBB").row(0, named=True)
+        self.assertIsNone(missing["Last Price"])
+        self.assertIsNone(missing["Market Value"])
+        self.assertEqual(summary["Cost Basis"], 50.0)
+        self.assertEqual(summary["Priced Cost Basis"], 10.0)
+        self.assertEqual(summary["Market Value"], 15.0)
+        self.assertEqual(summary["Gain/Loss %"], 50.0)
 
     def test_summarizes_allocation_by_portfolio_dimension(self) -> None:
         analysis = pl.DataFrame(
