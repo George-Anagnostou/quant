@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -9,23 +10,25 @@ from pathlib import Path
 DEFAULT_DATABASE_PATH = Path("data/quant.db")
 LOCAL_ADMIN_USER_ID = "local-admin"
 SCHEMA_VERSION = 2
+_INITIALIZATION_LOCK = threading.Lock()
 
 
 def initialize_database(path: Path = DEFAULT_DATABASE_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _open_connection(path) as connection:
-        version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version >= SCHEMA_VERSION:
-            return
-        # Another request may migrate while this connection waits for the lock.
-        connection.execute("BEGIN IMMEDIATE")
-        version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version < 1:
-            _migrate_user_data(connection)
-            connection.execute("PRAGMA user_version = 1")
-        if version < 2:
-            _migrate_market_data(connection)
-            connection.execute("PRAGMA user_version = 2")
+    with _INITIALIZATION_LOCK:
+        with _open_connection(path) as connection:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if version >= SCHEMA_VERSION:
+                return
+            # Another process may migrate while this connection waits for the lock.
+            connection.execute("BEGIN IMMEDIATE")
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if version < 1:
+                _migrate_user_data(connection)
+                connection.execute("PRAGMA user_version = 1")
+            if version < 2:
+                _migrate_market_data(connection)
+                connection.execute("PRAGMA user_version = 2")
 
 
 @contextmanager
@@ -40,9 +43,9 @@ def database_connection(
 def _open_connection(path: Path) -> Iterator[sqlite3.Connection]:
     connection = sqlite3.connect(path, timeout=30)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout = 30000")
     connection.execute("PRAGMA journal_mode = WAL")
     connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA busy_timeout = 30000")
     try:
         with connection:
             yield connection
