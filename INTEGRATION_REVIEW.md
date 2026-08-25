@@ -2,8 +2,8 @@
 
 ## Merged Work
 
-- PR #1 (`UI v1`) is present: FastAPI, watchlist, holdings, stock detail,
-  fundamentals, analyst data, earnings, options, news, search, and static UI.
+- PR #1 (`UI v1`) originally introduced FastAPI, watchlist, holdings, stock
+  detail, fundamentals, analyst data, earnings, options, news, and static UI.
 - PR #2 (`Add market analysis indicators`) is present: full daily bars, shared
   quote resolution, moving averages, changes, rolling levels, and volume metrics.
 - PR #3 was closed after its merge commit and portfolio metadata were incorporated
@@ -17,7 +17,7 @@
 ## Consolidated Boundaries
 
 - `analysis.py` contains pure Polars portfolio and market calculations.
-- `portfolio.py` owns shared cache-first portfolio analysis orchestration used by
+- `portfolio.py` owns shared stored-first portfolio analysis orchestration used by
   both CLI and dashboard.
 - `market_analysis.py` owns shared technical-analysis orchestration used by CLI
   and API.

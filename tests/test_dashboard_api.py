@@ -7,6 +7,14 @@ from quant.dashboard import server
 
 
 class DashboardApiTests(unittest.TestCase):
+    def test_deferred_research_routes_are_not_registered(self) -> None:
+        paths = {route.path for route in server.app.routes}
+
+        self.assertNotIn("/api/info/{symbol}", paths)
+        self.assertNotIn("/api/analyst/{symbol}", paths)
+        self.assertNotIn("/api/options/{symbol}", paths)
+        self.assertNotIn("/api/news/{symbol}", paths)
+
     def test_rejects_non_finite_holding_input(self) -> None:
         with self.assertRaises(ValidationError):
             server.HoldingIn(symbol="AAPL", shares=float("nan"), costBasis=100)

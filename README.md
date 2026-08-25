@@ -47,7 +47,7 @@ Analyze selected symbols with explicit trading-session windows and price basis:
 uv run quant market AAPL MSFT --windows 5 20 --price adjusted
 ```
 
-Analyze the full cached S&P 500:
+Analyze the full stored S&P 500 universe:
 
 ```sh
 uv run quant market --index --windows 5 20 --price adjusted
@@ -68,11 +68,11 @@ Run the FastAPI dashboard:
 uv run quant-dashboard
 ```
 
-Open http://127.0.0.1:8001. Override the bind address when needed:
+Open http://127.0.0.1:8001.
 
-```sh
-HOST=0.0.0.0 PORT=9000 uv run quant-dashboard
-```
+The current API is unauthenticated and always acts as `local-admin`. Keep it
+bound to loopback and do not expose it to a LAN or the internet until Clerk
+authentication is implemented.
 
 Routes:
 
@@ -81,7 +81,7 @@ Routes:
 - `/docs` provides generated API documentation.
 
 The dashboard includes an EOD watchlist, holdings and allocation, stored price
-history, and configurable technical analysis.
+history, and technical analysis.
 
 FastAPI routes delegate portfolio and technical calculations to shared Polars
 services. Durable market data is read from SQLite. Until the scheduled ingestion

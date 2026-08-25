@@ -96,11 +96,15 @@ function changeClass(value) {
 }
 
 function errorPanel(message) {
-  return element("div", { class: "error" }, message);
+  return element("div", { class: "error", role: "alert" }, message);
 }
 
 function loadingPanel(message = "Loading stored market data...") {
-  return element("div", { class: "panel muted" }, message);
+  return element(
+    "div",
+    { class: "panel muted", role: "status", "aria-live": "polite" },
+    message
+  );
 }
 
 function field(label, control) {
@@ -232,6 +236,7 @@ async function drawWatchlist(content, refresh = false) {
               {
                 class: "ghost",
                 type: "button",
+                "aria-label": `Remove ${symbol} from watchlist`,
                 onclick: async () => {
                   await api.watchlistRemove(symbol);
                   await drawWatchlist(content);
@@ -271,26 +276,40 @@ async function drawWatchlist(content, refresh = false) {
 }
 
 let priceChart = null;
+let navigationId = 0;
 
-async function renderStock(symbol) {
+async function renderStock(symbol, requestId) {
   symbol = symbol.toUpperCase();
   const root = element("div", { class: "stack" }, loadingPanel("Loading technical history..."));
   app.replaceChildren(root);
 
   try {
-    const technical = await api.analysis(symbol, [20, 50, 200], "adjusted");
+    const technical = await api.analysis(symbol, [20, 50, 200], "close");
+    if (requestId !== navigationId) return;
     const quote = await api.quote(symbol);
+    if (requestId !== navigationId) return;
     const rows = technical.rows || [];
     if (!rows.length) throw new Error("No stored daily history is available.");
     const latest = rows[rows.length - 1];
-    const chartCanvas = element("canvas", { id: "price-chart" });
+    const chartCanvas = element(
+      "canvas",
+      {
+        id: "price-chart",
+        role: "img",
+        "aria-label": `${symbol} stored daily close chart`,
+      },
+      `${symbol} stored daily close history is summarized in the table below.`
+    );
     const chartWrap = element("div", { class: "chart-wrap" }, chartCanvas);
-    const chartButtons = element("div", { class: "row" });
+    const chartButtons = element(
+      "div",
+      { class: "row", role: "group", "aria-label": "Chart date range" }
+    );
     const ranges = [
       ["3M", 90],
       ["6M", 180],
       ["1Y", 365],
-      ["MAX", null],
+      ["All stored", null],
     ];
 
     root.replaceChildren(
@@ -315,8 +334,8 @@ async function renderStock(symbol) {
         "div",
         { class: "grid cols-4" },
         metric("Daily return", fmtPercent(latest.dailyChangePercent), changeClass(latest.dailyChangePercent)),
-        metric("20-day high", fmtMoney(latest.rollingHighs?.["20"])),
-        metric("20-day low", fmtMoney(latest.rollingLows?.["20"])),
+        metric("20-session high", fmtMoney(latest.rollingHighs?.["20"])),
+        metric("20-session low", fmtMoney(latest.rollingLows?.["20"])),
         metric("Relative volume", formatMultiple(latest.relativeVolumes?.["20"]))
       ),
       element("div", { class: "panel stack" }, chartButtons, chartWrap),
@@ -325,9 +344,12 @@ async function renderStock(symbol) {
 
     function drawChart(days) {
       for (const button of chartButtons.querySelectorAll("button")) {
-        button.classList.toggle("active", button.dataset.days === String(days));
+        const active = button.dataset.days === String(days);
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", String(active));
       }
-      const cutoff = days == null ? null : new Date(Date.now() - days * 86400000);
+      const latestDate = new Date(rows[rows.length - 1].date);
+      const cutoff = days == null ? null : new Date(latestDate - days * 86400000);
       const visible = cutoff
         ? rows.filter((row) => new Date(row.date) >= cutoff)
         : rows;
@@ -373,6 +395,7 @@ async function renderStock(symbol) {
           class: `ghost${days === 365 ? " active" : ""}`,
           type: "button",
           "data-days": String(days),
+          "aria-pressed": String(days === 365),
           onclick: () => drawChart(days),
         },
         label
@@ -381,6 +404,7 @@ async function renderStock(symbol) {
     }
     drawChart(365);
   } catch (error) {
+    if (requestId !== navigationId) return;
     root.replaceChildren(errorPanel(`Technical analysis unavailable: ${error.message}`));
   }
 }
@@ -588,6 +612,7 @@ async function drawHoldings(totals, allocations, table, refresh = false) {
   try {
     const data = await api.holdings(refresh);
     const summary = data.totals || {};
+    const unpriced = data.unpricedSymbols || [];
     totals.replaceChildren(
       element(
         "div",
@@ -596,7 +621,14 @@ async function drawHoldings(totals, allocations, table, refresh = false) {
         metric("Market value", fmtMoney(summary.value)),
         metric("Unrealized gain", fmtMoney(summary.gain), changeClass(summary.gain)),
         metric("Return", fmtPercent(summary.gainPercent), changeClass(summary.gainPercent))
-      )
+      ),
+      unpriced.length
+        ? element(
+            "div",
+            { class: "warning", role: "status" },
+            `Market values exclude unavailable symbols: ${unpriced.join(", ")}.`
+          )
+        : null
     );
     allocations.replaceChildren(
       element(
@@ -636,7 +668,7 @@ async function drawHoldings(totals, allocations, table, refresh = false) {
             ),
             element("td", {}, fmtNumber(holding.shares, 4)),
             element("td", {}, fmtMoney(holding.costBasis)),
-            element("td", {}, fmtMoney(holding.price)),
+            element("td", {}, holding.marketDataAvailable ? fmtMoney(holding.price) : "Unavailable"),
             element("td", {}, fmtMoney(holding.marketValue)),
             element("td", { class: changeClass(holding.gain) }, fmtMoney(holding.gain)),
             element("td", { class: changeClass(holding.gainPercent) }, fmtPercent(holding.gainPercent)),
@@ -649,6 +681,7 @@ async function drawHoldings(totals, allocations, table, refresh = false) {
                 {
                   class: "danger",
                   type: "button",
+                  "aria-label": `Remove ${holding.symbol} holding`,
                   onclick: async () => {
                     await api.holdingRemove(holding.id);
                     await drawHoldings(totals, allocations, table);
@@ -765,6 +798,7 @@ async function renderMarketStrip(refresh = false) {
 }
 
 function router() {
+  const requestId = ++navigationId;
   if (priceChart) {
     priceChart.destroy();
     priceChart = null;
@@ -772,12 +806,28 @@ function router() {
   const hash = location.hash.replace(/^#/, "") || "/";
   for (const link of document.querySelectorAll("nav a")) {
     const href = link.getAttribute("href").replace(/^#/, "");
-    link.classList.toggle("active", href === hash);
+    const active = href === hash;
+    link.classList.toggle("active", active);
+    if (active) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
   }
-  if (hash === "/") return renderWatchlist();
-  if (hash === "/holdings") return renderHoldings();
+  app.setAttribute("tabindex", "-1");
+  app.focus({ preventScroll: true });
+  if (hash === "/") {
+    document.title = "Watchlist - Quant";
+    return renderWatchlist();
+  }
+  if (hash === "/holdings") {
+    document.title = "Holdings - Quant";
+    return renderHoldings();
+  }
   const stock = hash.match(/^\/stock\/(.+)$/);
-  if (stock) return renderStock(decodeURIComponent(stock[1]));
+  if (stock) {
+    const symbol = decodeURIComponent(stock[1]).toUpperCase();
+    document.title = `${symbol} - Quant`;
+    return renderStock(symbol, requestId);
+  }
+  document.title = "Not Found - Quant";
   app.replaceChildren(
     element("div", { class: "panel" }, "Page not found. ", element("a", { href: "#/" }, "Return home"))
   );
