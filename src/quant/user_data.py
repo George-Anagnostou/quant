@@ -2,52 +2,51 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
 import polars as pl
 
-DEFAULT_USER_DATA_PATH = Path("data/quant.db")
+from quant.database import (
+    DEFAULT_DATABASE_PATH,
+    LOCAL_ADMIN_USER_ID,
+    database_connection,
+    initialize_database,
+)
+
+DEFAULT_USER_DATA_PATH = DEFAULT_DATABASE_PATH
 DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "GOOGL", "TSLA"]
 
 
 class UserDataRepository:
-    def __init__(self, path: Path = DEFAULT_USER_DATA_PATH) -> None:
+    def __init__(
+        self,
+        path: Path = DEFAULT_USER_DATA_PATH,
+        user_id: str = LOCAL_ADMIN_USER_ID,
+    ) -> None:
         self.path = path
+        self.user_id = user_id
 
     def initialize(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        initialize_database(self.path)
         with self._connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS metadata (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS positions (
-                    id TEXT PRIMARY KEY,
-                    symbol TEXT NOT NULL,
-                    quantity REAL NOT NULL CHECK (quantity > 0),
-                    average_cost REAL NOT NULL CHECK (average_cost >= 0),
-                    account TEXT,
-                    asset_class TEXT,
-                    sector TEXT,
-                    acquired TEXT
-                );
-                CREATE TABLE IF NOT EXISTS watchlist (
-                    symbol TEXT PRIMARY KEY,
-                    sort_order INTEGER NOT NULL
-                );
-                """
-            )
-            if not self._is_seeded(connection, "watchlist"):
+            user = connection.execute(
+                "SELECT 1 FROM users WHERE id = ?", (self.user_id,)
+            ).fetchone()
+            if user is None:
+                raise ValueError(f"Unknown user: {self.user_id}")
+            if not self._is_seeded(connection, f"watchlist:{self.user_id}"):
                 connection.executemany(
-                    "INSERT OR IGNORE INTO watchlist(symbol, sort_order) VALUES (?, ?)",
-                    [(symbol, index) for index, symbol in enumerate(DEFAULT_WATCHLIST)],
+                    """
+                    INSERT OR IGNORE INTO watchlist(user_id, symbol, sort_order)
+                    VALUES (?, ?, ?)
+                    """,
+                    [
+                        (self.user_id, symbol, index)
+                        for index, symbol in enumerate(DEFAULT_WATCHLIST)
+                    ],
                 )
-                self._mark_seeded(connection, "watchlist")
+                self._mark_seeded(connection, f"watchlist:{self.user_id}")
 
     def list_positions(self) -> list[dict]:
         self.initialize()
@@ -57,8 +56,10 @@ class UserDataRepository:
                 SELECT id, symbol, quantity, average_cost, account,
                        asset_class, sector, acquired
                 FROM positions
+                WHERE user_id = ?
                 ORDER BY rowid
-                """
+                """,
+                (self.user_id,),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -100,6 +101,7 @@ class UserDataRepository:
         self.initialize()
         position = {
             "id": str(uuid.uuid4()),
+            "user_id": self.user_id,
             "symbol": symbol.strip().upper(),
             "quantity": float(quantity),
             "average_cost": float(average_cost),
@@ -118,10 +120,10 @@ class UserDataRepository:
             connection.execute(
                 """
                 INSERT INTO positions(
-                    id, symbol, quantity, average_cost, account,
+                    id, user_id, symbol, quantity, average_cost, account,
                     asset_class, sector, acquired
                 ) VALUES (
-                    :id, :symbol, :quantity, :average_cost, :account,
+                    :id, :user_id, :symbol, :quantity, :average_cost, :account,
                     :asset_class, :sector, :acquired
                 )
                 """,
@@ -133,7 +135,8 @@ class UserDataRepository:
         self.initialize()
         with self._connect() as connection:
             cursor = connection.execute(
-                "DELETE FROM positions WHERE id = ?", (position_id,)
+                "DELETE FROM positions WHERE id = ? AND user_id = ?",
+                (position_id, self.user_id),
             )
         return cursor.rowcount > 0
 
@@ -141,7 +144,13 @@ class UserDataRepository:
         self.initialize()
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT symbol FROM watchlist ORDER BY sort_order, rowid"
+                """
+                SELECT symbol
+                FROM watchlist
+                WHERE user_id = ?
+                ORDER BY sort_order, symbol
+                """,
+                (self.user_id,),
             ).fetchall()
         return [row["symbol"] for row in rows]
 
@@ -152,11 +161,19 @@ class UserDataRepository:
             raise ValueError("Symbol is required")
         with self._connect() as connection:
             next_order = connection.execute(
-                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM watchlist"
+                """
+                SELECT COALESCE(MAX(sort_order), -1) + 1
+                FROM watchlist
+                WHERE user_id = ?
+                """,
+                (self.user_id,),
             ).fetchone()[0]
             connection.execute(
-                "INSERT OR IGNORE INTO watchlist(symbol, sort_order) VALUES (?, ?)",
-                (symbol, next_order),
+                """
+                INSERT OR IGNORE INTO watchlist(user_id, symbol, sort_order)
+                VALUES (?, ?, ?)
+                """,
+                (self.user_id, symbol, next_order),
             )
         return self.list_watchlist()
 
@@ -164,21 +181,13 @@ class UserDataRepository:
         self.initialize()
         with self._connect() as connection:
             connection.execute(
-                "DELETE FROM watchlist WHERE symbol = ?", (symbol.strip().upper(),)
+                "DELETE FROM watchlist WHERE user_id = ? AND symbol = ?",
+                (self.user_id, symbol.strip().upper()),
             )
         return self.list_watchlist()
 
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA foreign_keys = ON")
-        try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
+    def _connect(self):
+        return database_connection(self.path)
 
     @staticmethod
     def _is_seeded(connection: sqlite3.Connection, key: str) -> bool:
