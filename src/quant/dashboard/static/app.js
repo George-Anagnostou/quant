@@ -1,1500 +1,657 @@
-// Quant Dashboard — vanilla JS single-page app.
-// Routes (hash-based):
-//   #/                 -> Watchlist
-//   #/stock/:symbol    -> Stock detail
-//   #/holdings         -> Holdings
+// Quant Dashboard - EOD portfolio and technical analysis.
 
 const app = document.getElementById("app");
 
-// ---------- helpers ----------
-
 const api = {
-  quote: (s) => j(`/api/quote/${encodeURIComponent(s)}`),
-  history: (s, period = "6mo", interval = "1d") =>
-    j(`/api/history/${encodeURIComponent(s)}?period=${period}&interval=${interval}`),
-  analysis: (s, windows, price) =>
-    j(
-      `/api/analysis/${encodeURIComponent(s)}?windows=${encodeURIComponent(windows.join(","))}&price=${encodeURIComponent(price)}`
+  quote: (symbol, refresh = false) =>
+    request(`/api/quote/${encodeURIComponent(symbol)}?refresh=${refresh}`),
+  quotes: (symbols, refresh = false) =>
+    request(
+      `/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}&refresh=${refresh}`
     ),
-  info: (s) => j(`/api/info/${encodeURIComponent(s)}`),
-  analyst: (s) => j(`/api/analyst/${encodeURIComponent(s)}`),
-  earnings: (s) => j(`/api/earnings/${encodeURIComponent(s)}`),
-  options: (s, exp) =>
-    j(`/api/options/${encodeURIComponent(s)}${exp ? `?expiration=${encodeURIComponent(exp)}` : ""}`),
-  news: (s) => j(`/api/news/${encodeURIComponent(s)}`),
-  newsFeed: (symbols) =>
-    j(`/api/news${symbols && symbols.length ? `?symbols=${encodeURIComponent(symbols.join(","))}` : ""}`),
-  search: (q) => j(`/api/search?q=${encodeURIComponent(q)}`),
-  watchlistGet: () => j(`/api/watchlist`),
-  watchlistAdd: (symbol) => j(`/api/watchlist`, "POST", { symbol }),
-  watchlistRemove: (symbol) => j(`/api/watchlist/${encodeURIComponent(symbol)}`, "DELETE"),
-  holdings: () => j(`/api/holdings`),
+  analysis: (symbol, windows, price) =>
+    request(
+      `/api/analysis/${encodeURIComponent(symbol)}?windows=${encodeURIComponent(
+        windows.join(",")
+      )}&price=${encodeURIComponent(price)}`
+    ),
+  watchlistGet: () => request("/api/watchlist"),
+  watchlistAdd: (symbol) => request("/api/watchlist", "POST", { symbol }),
+  watchlistRemove: (symbol) =>
+    request(`/api/watchlist/${encodeURIComponent(symbol)}`, "DELETE"),
+  holdings: (refresh = false) => request(`/api/holdings?refresh=${refresh}`),
   holdingAdd: (symbol, shares, costBasis, metadata = {}) =>
-    j(`/api/holdings`, "POST", { symbol, shares, costBasis, ...metadata }),
-  holdingRemove: (id) => j(`/api/holdings/${encodeURIComponent(id)}`, "DELETE"),
-  quotes: (symbols) => j(`/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}`),
+    request("/api/holdings", "POST", {
+      symbol,
+      shares,
+      costBasis,
+      ...metadata,
+    }),
+  holdingRemove: (id) =>
+    request(`/api/holdings/${encodeURIComponent(id)}`, "DELETE"),
 };
 
-async function j(path, method = "GET", body) {
-  const res = await fetch(path, {
+async function request(path, method = "GET", body) {
+  const response = await fetch(path, {
     method,
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
-}
-
-function fmtMoney(n, currency = "USD") {
-  if (n == null || Number.isNaN(n)) return "—";
-  const abs = Math.abs(n);
-  if (abs >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
-  if (abs >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
-  try {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency,
-      maximumFractionDigits: 2,
-    }).format(n);
-  } catch {
-    return `$${n.toFixed(2)}`;
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`;
+    try {
+      const payload = await response.json();
+      detail = payload.detail || detail;
+    } catch {
+      // Keep the HTTP status when an error response has no JSON body.
+    }
+    throw new Error(detail);
   }
-}
-function fmtPct(n) {
-  if (n == null || Number.isNaN(n)) return "—";
-  const s = n >= 0 ? "+" : "";
-  return `${s}${n.toFixed(2)}%`;
-}
-function fmtNum(n, digits = 2) {
-  if (n == null || Number.isNaN(n)) return "—";
-  return n.toLocaleString("en-US", { maximumFractionDigits: digits });
+  return response.json();
 }
 
-function h(tag, attrs = {}, ...children) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs || {})) {
-    if (v == null || v === false) continue;
-    if (k === "class") el.className = v;
-    else if (k === "html") el.innerHTML = v;
-    else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v);
-    else if (k === "style" && typeof v === "object") Object.assign(el.style, v);
-    else el.setAttribute(k, v);
+function element(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value == null || value === false) continue;
+    if (key === "class") node.className = value;
+    else if (key === "style" && typeof value === "object") {
+      Object.assign(node.style, value);
+    } else if (key.startsWith("on") && typeof value === "function") {
+      node.addEventListener(key.slice(2), value);
+    } else {
+      node.setAttribute(key, value);
+    }
   }
-  for (const c of children.flat()) {
-    if (c == null || c === false) continue;
-    el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  for (const child of children.flat()) {
+    if (child == null || child === false) continue;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
   }
-  return el;
+  return node;
 }
 
-// ---------- watchlist ----------
+function fmtMoney(value) {
+  if (value == null || Number.isNaN(value)) return "-";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(value);
+}
 
-let watchlistTimer = null;
+function fmtPercent(value, signed = true) {
+  if (value == null || Number.isNaN(value)) return "-";
+  const sign = signed && value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(2)}%`;
+}
+
+function fmtNumber(value, digits = 2) {
+  if (value == null || Number.isNaN(value)) return "-";
+  return value.toLocaleString("en-US", { maximumFractionDigits: digits });
+}
+
+function changeClass(value) {
+  if (value == null || value === 0) return "muted";
+  return value > 0 ? "up" : "down";
+}
+
+function errorPanel(message) {
+  return element("div", { class: "error" }, message);
+}
+
+function loadingPanel(message = "Loading stored market data...") {
+  return element("div", { class: "panel muted" }, message);
+}
+
+function field(label, control) {
+  return element(
+    "label",
+    { class: "field" },
+    element("span", { class: "field-label" }, label),
+    control
+  );
+}
 
 async function renderWatchlist() {
-  clearInterval(watchlistTimer);
-  const root = h("div", { class: "stack" });
-  app.replaceChildren(root);
-
-  const header = h(
-    "div",
-    { class: "row between" },
-    h(
-      "div",
-      {},
-      h("h1", {}, "Watchlist"),
-      h("div", { class: "muted small" }, "Live quotes refresh every 30s.")
-    ),
-    mountSearch((sym) => addWatch(sym))
+  const root = element("div", { class: "stack" });
+  const content = element("div", {}, loadingPanel());
+  const symbolInput = element("input", {
+    placeholder: "AAPL",
+    autocomplete: "off",
+    "aria-label": "Ticker symbol",
+    oninput: (event) => {
+      event.target.value = event.target.value.toUpperCase();
+    },
+  });
+  const addForm = element(
+    "form",
+    {
+      class: "row",
+      onsubmit: async (event) => {
+        event.preventDefault();
+        const symbol = symbolInput.value.trim().toUpperCase();
+        if (!symbol) return;
+        try {
+          await api.watchlistAdd(symbol);
+          symbolInput.value = "";
+          await drawWatchlist(content);
+        } catch (error) {
+          content.replaceChildren(errorPanel(`Could not add symbol: ${error.message}`));
+        }
+      },
+    },
+    symbolInput,
+    element("button", { type: "submit" }, "Add symbol")
   );
-  const panel = h("div", { class: "panel", style: { padding: 0, overflow: "hidden" } });
-  const newsSlot = h("div");
-  root.append(header, panel, newsSlot);
+  const refreshButton = element(
+    "button",
+    {
+      class: "ghost",
+      type: "button",
+      onclick: async () => {
+        refreshButton.disabled = true;
+        try {
+          await drawWatchlist(content, true);
+          await renderMarketStrip(true);
+        } finally {
+          refreshButton.disabled = false;
+        }
+      },
+    },
+    "Refresh EOD data"
+  );
 
-  async function addWatch(sym) {
-    await api.watchlistAdd(sym);
-    draw();
-    loadNews();
-  }
-  async function removeWatch(sym) {
-    await api.watchlistRemove(sym);
-    draw();
-    loadNews();
-  }
-
-  async function loadNews() {
-    newsSlot.replaceChildren(
-      h(
+  root.append(
+    element(
+      "div",
+      { class: "row between page-heading" },
+      element(
         "div",
-        { class: "panel" },
-        h("h2", {}, "Recent News"),
-        h("div", { class: "muted" }, "Loading…")
-      )
-    );
-    try {
-      const { items, symbols } = await api.newsFeed();
-      newsSlot.replaceChildren(renderFeedNews(items || [], symbols || []));
-    } catch (e) {
-      newsSlot.replaceChildren(
-        h(
-          "div",
-          { class: "panel" },
-          h("h2", {}, "Recent News"),
-          h("div", { class: "error" }, `News unavailable: ${e.message}`)
-        )
-      );
-    }
-  }
-
-  async function draw() {
-    const { symbols } = await api.watchlistGet();
-    const tbl = h(
-      "table",
-      {},
-      h(
-        "thead",
         {},
-        h(
-          "tr",
-          {},
-          h("th", {}, "Symbol"),
-          h("th", {}, "Name"),
-          h("th", {}, "Price"),
-          h("th", {}, "Change"),
-          h("th", {}, "Change %"),
-          h("th", {}, "Volume"),
-          h("th", {})
+        element("h1", {}, "Watchlist"),
+        element(
+          "div",
+          { class: "muted small" },
+          "Latest stored daily close, change, and volume."
         )
       ),
-      h("tbody", {})
-    );
-    const body = tbl.querySelector("tbody");
+      element("div", { class: "row" }, addForm, refreshButton)
+    ),
+    content
+  );
+  app.replaceChildren(root);
+  await drawWatchlist(content);
+}
+
+async function drawWatchlist(content, refresh = false) {
+  content.replaceChildren(loadingPanel());
+  try {
+    const { symbols } = await api.watchlistGet();
     if (!symbols.length) {
-      body.append(
-        h(
-          "tr",
-          {},
-          h(
-            "td",
-            { colspan: 7, class: "muted", style: { textAlign: "center", padding: "24px" } },
-            "Watchlist is empty. Add a ticker above."
-          )
+      content.replaceChildren(
+        element(
+          "div",
+          { class: "panel empty-state" },
+          element("h2", {}, "No symbols yet"),
+          element("div", { class: "muted" }, "Add a US equity ticker to begin.")
         )
       );
-    } else {
-      for (const sym of symbols) {
-        const tr = h(
-          "tr",
-          {},
-          h("td", {}, h("a", { href: `#/stock/${sym}` }, sym)),
-          h("td", { class: "muted", id: `wname-${sym}` }, "…"),
-          h("td", { id: `wprice-${sym}` }, "…"),
-          h("td", { id: `wchg-${sym}` }, "…"),
-          h("td", { id: `wpct-${sym}` }, "…"),
-          h("td", { class: "muted", id: `wvol-${sym}` }, "…"),
-          h(
-            "td",
-            { class: "right" },
-            h("button", { class: "ghost", onclick: () => removeWatch(sym) }, "Remove")
-          )
-        );
-        body.append(tr);
-      }
-    }
-    panel.replaceChildren(tbl);
-    for (const sym of symbols) refreshRow(sym);
-  }
-
-  async function refreshRow(sym) {
-    try {
-      const q = await api.quote(sym);
-      const up = (q.change ?? 0) >= 0;
-      setText(`wname-${sym}`, q.name ?? "—");
-      setText(`wprice-${sym}`, fmtMoney(q.price, q.currency || "USD"));
-      const chg = document.getElementById(`wchg-${sym}`);
-      const pct = document.getElementById(`wpct-${sym}`);
-      if (chg) {
-        chg.textContent = fmtMoney(q.change ?? null, q.currency || "USD");
-        chg.className = up ? "up" : "down";
-      }
-      if (pct) {
-        pct.textContent = fmtPct(q.changePercent);
-        pct.className = up ? "up" : "down";
-      }
-      setText(`wvol-${sym}`, fmtNum(q.volume ?? null, 0));
-    } catch {
-      setText(`wprice-${sym}`, "err");
-    }
-  }
-
-  await draw();
-  loadNews();
-  watchlistTimer = setInterval(async () => {
-    const { symbols } = await api.watchlistGet();
-    for (const s of symbols) refreshRow(s);
-  }, 30000);
-}
-
-function renderFeedNews(items, symbols) {
-  const panel = h(
-    "div",
-    { class: "panel" },
-    h(
-      "div",
-      { class: "row between" },
-      h("h2", { style: { margin: 0 } }, "Recent News"),
-      h(
-        "div",
-        { class: "muted small" },
-        symbols.length ? `From ${symbols.join(", ")}` : ""
-      )
-    )
-  );
-  if (!items.length) {
-    panel.append(
-      h("div", { class: "muted", style: { marginTop: "8px" } }, "No recent news.")
-    );
-    return panel;
-  }
-  const list = h("div", { class: "stack", style: { marginTop: "12px" } });
-  for (const n of items) {
-    const when =
-      typeof n.publishedAt === "number"
-        ? new Date(n.publishedAt * 1000).toLocaleString()
-        : n.publishedAt
-        ? new Date(n.publishedAt).toLocaleString()
-        : "";
-    const text = h(
-      "div",
-      { style: { flex: "1", minWidth: "0" } },
-      h(
-        "div",
-        { class: "row", style: { gap: "8px", alignItems: "baseline" } },
-        n.symbol
-          ? h("a", { href: `#/stock/${n.symbol}`, class: "pill" }, n.symbol)
-          : null,
-        h(
-          "a",
-          {
-            href: n.link || "#",
-            target: "_blank",
-            rel: "noreferrer",
-            style: { fontWeight: "500" },
-          },
-          n.title || "Untitled"
-        )
-      ),
-      h("div", { class: "muted small" }, `${n.publisher ?? "—"} · ${when}`),
-      n.summary
-        ? h("div", { class: "muted small", style: { marginTop: "4px" } }, n.summary)
-        : null
-    );
-    list.append(
-      h(
-        "div",
-        {
-          class: "news-item",
-          style: {
-            paddingBottom: "12px",
-            borderBottom: "1px solid #1f2530",
-          },
-        },
-        n.thumbnail ? h("img", { class: "news-thumb", src: n.thumbnail, loading: "lazy", alt: "" }) : null,
-        text
-      )
-    );
-  }
-  panel.append(list);
-  return panel;
-}
-
-function setText(id, text) {
-  const el = document.getElementById(id);
-  if (el) el.textContent = text;
-}
-
-// ---------- search box ----------
-
-function mountSearch(onPick, placeholder = "Search ticker…") {
-  const wrap = h("div", { class: "search-wrap" });
-  const input = h("input", { placeholder, autocomplete: "off" });
-  const box = h("div", { class: "search-results", style: { display: "none" } });
-  wrap.append(input, box);
-
-  let t = null;
-  input.addEventListener("input", () => {
-    clearTimeout(t);
-    const q = input.value.trim();
-    if (!q) {
-      box.style.display = "none";
       return;
     }
-    t = setTimeout(async () => {
-      try {
-        const { results } = await api.search(q);
-        box.replaceChildren();
-        if (!results.length) {
-          box.style.display = "none";
-          return;
-        }
-        for (const r of results) {
-          const btn = h(
-            "button",
-            {
-              onclick: () => {
-                onPick(r.symbol.toUpperCase());
-                input.value = "";
-                box.style.display = "none";
+
+    const { quotes } = await api.quotes(symbols, refresh);
+    const quoteBySymbol = new Map(quotes.map((quote) => [quote.symbol, quote]));
+    const body = element("tbody");
+    for (const symbol of symbols) {
+      const quote = quoteBySymbol.get(symbol);
+      const unavailable = !quote || quote.error;
+      body.append(
+        element(
+          "tr",
+          {},
+          element("td", {}, element("a", { href: `#/stock/${symbol}` }, symbol)),
+          element("td", { class: "muted" }, unavailable ? "-" : quote.name),
+          element("td", {}, unavailable ? "Unavailable" : fmtMoney(quote.price)),
+          element(
+            "td",
+            { class: unavailable ? "muted" : changeClass(quote.change) },
+            unavailable ? "-" : fmtMoney(quote.change)
+          ),
+          element(
+            "td",
+            { class: unavailable ? "muted" : changeClass(quote.changePercent) },
+            unavailable ? "-" : fmtPercent(quote.changePercent)
+          ),
+          element("td", { class: "muted" }, unavailable ? "-" : fmtNumber(quote.volume, 0)),
+          element("td", { class: "muted small" }, unavailable ? "-" : quote.asOf),
+          element(
+            "td",
+            { class: "right" },
+            element(
+              "button",
+              {
+                class: "ghost",
+                type: "button",
+                onclick: async () => {
+                  await api.watchlistRemove(symbol);
+                  await drawWatchlist(content);
+                },
               },
-            },
-            h(
-              "div",
-              { class: "row between" },
-              h("span", { style: { fontWeight: "500" } }, r.symbol),
-              h("span", { class: "muted small" }, r.exchange ?? "")
-            ),
-            h("div", { class: "muted small" }, r.name ?? "")
-          );
-          box.append(btn);
-        }
-        box.style.display = "block";
-      } catch {
-        box.style.display = "none";
-      }
-    }, 200);
-  });
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && input.value.trim()) {
-      onPick(input.value.trim().toUpperCase());
-      input.value = "";
-      box.style.display = "none";
+              "Remove"
+            )
+          )
+        )
+      );
     }
-  });
-  document.addEventListener("mousedown", (e) => {
-    if (!wrap.contains(e.target)) box.style.display = "none";
-  });
-  return wrap;
+    content.replaceChildren(
+      element(
+        "div",
+        { class: "panel table-panel" },
+        element(
+          "table",
+          {},
+          element(
+            "thead",
+            {},
+            element(
+              "tr",
+              {},
+              ...["Symbol", "Company", "Close", "Change", "Change %", "Volume", "As of", ""].map(
+                (label) => element("th", {}, label)
+              )
+            )
+          ),
+          body
+        )
+      )
+    );
+  } catch (error) {
+    content.replaceChildren(errorPanel(`Watchlist unavailable: ${error.message}`));
+  }
 }
 
-// ---------- stock detail ----------
-
-let stockTimers = [];
+let priceChart = null;
 
 async function renderStock(symbol) {
-  stockTimers.forEach(clearInterval);
-  stockTimers = [];
-  symbol = (symbol || "").toUpperCase();
-
-  const root = h("div", { class: "stack" });
+  symbol = symbol.toUpperCase();
+  const root = element("div", { class: "stack" }, loadingPanel("Loading technical history..."));
   app.replaceChildren(root);
 
-  // Header
-  const header = h(
-    "div",
-    {},
-    h("div", { class: "muted small", id: "sname" }, "—"),
-    h("h1", {}, symbol),
-    h(
-      "div",
-      { class: "row", style: { alignItems: "baseline" } },
-      h("span", { class: "price-big", id: "sprice" }, "…"),
-      h("span", { id: "schange" }, "")
-    ),
-    h("div", { class: "muted small", id: "smeta" }, "")
-  );
-  root.append(header);
+  try {
+    const technical = await api.analysis(symbol, [20, 50, 200], "adjusted");
+    const quote = await api.quote(symbol);
+    const rows = technical.rows || [];
+    if (!rows.length) throw new Error("No stored daily history is available.");
+    const latest = rows[rows.length - 1];
+    const chartCanvas = element("canvas", { id: "price-chart" });
+    const chartWrap = element("div", { class: "chart-wrap" }, chartCanvas);
+    const chartButtons = element("div", { class: "row" });
+    const ranges = [
+      ["3M", 90],
+      ["6M", 180],
+      ["1Y", 365],
+      ["MAX", null],
+    ];
 
-  // Chart panel
-  const periods = [
-    ["1D", "1d", "1m"],
-    ["5D", "5d", "30m"],
-    ["1M", "1mo", "1d"],
-    ["6M", "6mo", "1d"],
-    ["1Y", "1y", "1d"],
-    ["5Y", "5y", "1wk"],
-    ["MAX", "max", "1mo"],
-  ];
-  const chartButtons = h("div", { class: "row" });
-  const chartWrap = h("div", { class: "chart-wrap" }, h("canvas", { id: "pricechart" }));
-  const chartPanel = h("div", { class: "panel stack" }, chartButtons, chartWrap);
-  root.append(chartPanel);
-
-  let chartObj = null;
-  let currentPeriod = 3;
-  let prevClose = null;
-  const technicalAnalysis = api.analysis(symbol, [50, 200], "close").catch(() => null);
-  periods.forEach(([label], i) => {
-    const btn = h(
-      "button",
-      {
-        class: "ghost" + (i === currentPeriod ? " active" : ""),
-        onclick: () => {
-          currentPeriod = i;
-          for (const b of chartButtons.querySelectorAll("button")) b.classList.remove("active");
-          btn.classList.add("active");
-          loadChart();
-        },
-      },
-      label
+    root.replaceChildren(
+      element(
+        "div",
+        { class: "page-heading" },
+        element("div", { class: "muted small" }, quote.name || symbol),
+        element("h1", {}, symbol),
+        element(
+          "div",
+          { class: "row", style: { alignItems: "baseline" } },
+          element("span", { class: "price-big" }, fmtMoney(quote.price)),
+          element(
+            "span",
+            { class: changeClass(quote.changePercent) },
+            `${fmtMoney(quote.change)} (${fmtPercent(quote.changePercent)})`
+          )
+        ),
+        element("div", { class: "muted small" }, `Stored EOD observation - ${quote.asOf}`)
+      ),
+      element(
+        "div",
+        { class: "grid cols-4" },
+        metric("Daily return", fmtPercent(latest.dailyChangePercent), changeClass(latest.dailyChangePercent)),
+        metric("20-day high", fmtMoney(latest.rollingHighs?.["20"])),
+        metric("20-day low", fmtMoney(latest.rollingLows?.["20"])),
+        metric("Relative volume", formatMultiple(latest.relativeVolumes?.["20"]))
+      ),
+      element("div", { class: "panel stack" }, chartButtons, chartWrap),
+      renderTechnicalSnapshot(latest)
     );
-    chartButtons.append(btn);
-  });
 
-  async function loadChart() {
-    const [, period, interval] = periods[currentPeriod];
-    try {
-      const { candles } = await api.history(symbol, period, interval);
-      const data = candles.filter((c) => c.close != null).map((c) => ({ x: c.t, y: c.close }));
-      const isIntraday = currentPeriod === 0; // "1D"
-      const isFiveDay = currentPeriod === 1; // "5D"
-      // Anchor the change comparison to the baseline: prev close for 1D,
-      // the first candle's close (≈price at start of window) for 5D.
-      const baselineValue = isIntraday && prevClose != null
-        ? prevClose
-        : data[0]?.y ?? 0;
-      const baselineLabel = isIntraday ? "Prev close" : isFiveDay ? "5D ago" : null;
-      const last = data[data.length - 1]?.y ?? 0;
-      const up = last >= baselineValue;
-      const color = up ? "#22c55e" : "#ef4444";
-      if (chartObj) chartObj.destroy();
-      const ctx = document.getElementById("pricechart").getContext("2d");
-      const grad = ctx.createLinearGradient(0, 0, 0, 340);
-      grad.addColorStop(0, color + "55");
-      grad.addColorStop(1, color + "00");
-
-      // For 1D, pin x-axis to the full US equities session (9:30–16:00 local
-      // to the first candle) so early-session data doesn't compress to a dot.
-      let xMin, xMax;
-      if (isIntraday && data.length) {
-        const first = new Date(data[0].x);
-        const sessionOpen = new Date(first);
-        sessionOpen.setHours(9, 30, 0, 0);
-        const sessionClose = new Date(first);
-        sessionClose.setHours(16, 0, 0, 0);
-        xMin = sessionOpen.toISOString();
-        xMax = sessionClose.toISOString();
+    function drawChart(days) {
+      for (const button of chartButtons.querySelectorAll("button")) {
+        button.classList.toggle("active", button.dataset.days === String(days));
       }
-
-      const datasets = [
-        {
-          label: symbol,
-          data,
-          borderColor: color,
-          backgroundColor: grad,
-          borderWidth: 2,
-          pointRadius: 0,
-          fill: true,
-          tension: 0.1,
-          spanGaps: true,
-        },
-      ];
-      if (baselineLabel && data.length) {
-        datasets.push({
-          label: baselineLabel,
-          data: [
-            { x: xMin ?? data[0].x, y: baselineValue },
-            { x: xMax ?? data[data.length - 1].x, y: baselineValue },
-          ],
-          borderColor: "#8a93a6",
-          borderWidth: 1,
-          borderDash: [4, 4],
-          pointRadius: 0,
-          fill: false,
-          tension: 0,
-        });
-      }
-
-      // Moving averages: only meaningful with daily+ data, so skip 1D/5D.
-      const showMA = !isIntraday && !isFiveDay && interval === "1d";
-      const maLabels = new Set();
-      if (showMA) {
-        const technical = await technicalAnalysis;
-        const rows = technical?.rows || [];
-        const sma50 = rows
-          .filter((row) => row.movingAverages?.["50"] != null)
-          .map((row) => ({ x: row.date, y: row.movingAverages["50"] }));
-        const sma200 = rows
-          .filter((row) => row.movingAverages?.["200"] != null)
-          .map((row) => ({ x: row.date, y: row.movingAverages["200"] }));
-        if (sma50.length) {
-          datasets.push({
-            label: "50-day MA",
-            data: sma50,
-            borderColor: "#f59e0b",
-            borderWidth: 1.25,
-            pointRadius: 0,
-            fill: false,
-            tension: 0,
-          });
-          maLabels.add("50-day MA");
-        }
-        if (sma200.length) {
-          datasets.push({
-            label: "200-day MA",
-            data: sma200,
-            borderColor: "#a78bfa",
-            borderWidth: 1.25,
-            pointRadius: 0,
-            fill: false,
-            tension: 0,
-          });
-          maLabels.add("200-day MA");
-        }
-      }
-
-      chartObj = new Chart(ctx, {
+      const cutoff = days == null ? null : new Date(Date.now() - days * 86400000);
+      const visible = cutoff
+        ? rows.filter((row) => new Date(row.date) >= cutoff)
+        : rows;
+      if (priceChart) priceChart.destroy();
+      priceChart = new Chart(chartCanvas.getContext("2d"), {
         type: "line",
-        data: { datasets },
+        data: {
+          datasets: [
+            chartDataset(symbol, visible, (row) => row.price, "#4f8cff", 2),
+            chartDataset("50-day average", visible, (row) => row.movingAverages?.["50"], "#f59e0b", 1.25),
+            chartDataset("200-day average", visible, (row) => row.movingAverages?.["200"], "#a78bfa", 1.25),
+          ],
+        },
         options: {
           responsive: true,
           maintainAspectRatio: false,
           interaction: { mode: "index", intersect: false },
           plugins: {
-            legend: {
-              display: showMA && maLabels.size > 0,
-              position: "top",
-              align: "end",
-              labels: {
-                color: "#8a93a6",
-                filter: (item) => maLabels.has(item.text),
-                boxWidth: 12,
-                boxHeight: 2,
-              },
-            },
+            legend: { labels: { color: "#8a93a6" } },
             tooltip: {
-              filter: (item) => item.dataset.label !== baselineLabel,
-              callbacks: { label: (c) => `${c.dataset.label}: ${fmtMoney(c.parsed.y)}` },
+              callbacks: { label: (context) => `${context.dataset.label}: ${fmtMoney(context.parsed.y)}` },
             },
           },
           scales: {
             x: {
               type: "time",
-              time: { tooltipFormat: "PPpp" },
-              min: xMin,
-              max: xMax,
               ticks: { color: "#8a93a6" },
               grid: { color: "#1f2530" },
             },
             y: {
-              ticks: { color: "#8a93a6", callback: (v) => v.toFixed(2) },
+              ticks: { color: "#8a93a6", callback: (value) => Number(value).toFixed(2) },
               grid: { color: "#1f2530" },
             },
           },
         },
       });
-    } catch (e) {
-      chartWrap.replaceChildren(h("div", { class: "error" }, `Chart error: ${e.message}`));
     }
-  }
 
-  async function loadQuote() {
-    try {
-      const q = await api.quote(symbol);
-      const up = (q.change ?? 0) >= 0;
-      prevClose = q.previousClose ?? null;
-      setText("sname", q.name ?? "—");
-      setText("sprice", fmtMoney(q.price, q.currency || "USD"));
-      const c = document.getElementById("schange");
-      if (c) {
-        c.textContent = ` ${fmtMoney(q.change ?? null, q.currency || "USD")} (${fmtPct(q.changePercent)})`;
-        c.className = up ? "up" : "down";
-      }
-      setText(
-        "smeta",
-        `Market ${q.marketState ?? "—"} · Vol ${fmtNum(q.volume ?? null, 0)} · Day ${fmtMoney(q.dayLow ?? null)} – ${fmtMoney(q.dayHigh ?? null)}`
+    for (const [label, days] of ranges) {
+      const button = element(
+        "button",
+        {
+          class: `ghost${days === 365 ? " active" : ""}`,
+          type: "button",
+          "data-days": String(days),
+          onclick: () => drawChart(days),
+        },
+        label
       );
-      return q.price;
-    } catch (e) {
-      setText("sprice", "err");
-      setText("smeta", e.message);
-      return null;
+      chartButtons.append(button);
     }
+    drawChart(365);
+  } catch (error) {
+    root.replaceChildren(errorPanel(`Technical analysis unavailable: ${error.message}`));
   }
-
-  // Placeholders for subsequent panels; filled as data arrives.
-  const earningsBannerSlot = h("div");
-  const analystSlot = h("div");
-  const earningsHistorySlot = h("div");
-  const aboutSlot = h("div");
-  const metricsSlot = h("div");
-  const optionsSlot = h("div", { class: "panel" }, h("div", { class: "muted" }, "Loading options…"));
-  const newsSlot = h("div", { class: "panel" }, h("div", { class: "muted" }, "Loading news…"));
-  const bottomGrid = h("div", { class: "grid cols-2" }, optionsSlot, newsSlot);
-  // Order: banner -> chart (above) -> analyst -> earnings history -> about -> metrics -> bottom.
-  root.insertBefore(earningsBannerSlot, chartPanel);
-  root.append(analystSlot, earningsHistorySlot, aboutSlot, metricsSlot, bottomGrid);
-
-  const currentPrice = await loadQuote();
-  loadChart();
-  stockTimers.push(setInterval(loadQuote, 30000));
-
-  // Analyst
-  try {
-    const a = await api.analyst(symbol);
-    analystSlot.replaceChildren(renderAnalyst(a, currentPrice));
-  } catch (e) {
-    analystSlot.replaceChildren(h("div", { class: "panel error" }, `Analyst data unavailable: ${e.message}`));
-  }
-
-  // Info (about + metrics)
-  try {
-    const info = await api.info(symbol);
-    if (info && typeof info.longBusinessSummary === "string" && info.longBusinessSummary) {
-      aboutSlot.replaceChildren(
-        h(
-          "div",
-          { class: "panel" },
-          h("h2", {}, `About ${info.shortName || symbol}`),
-          h(
-            "div",
-            { class: "muted small" },
-            [info.sector, info.industry, info.country].filter(Boolean).join(" · ") || "—"
-          ),
-          h("p", { class: "muted", style: { lineHeight: "1.6", marginTop: "8px" } }, info.longBusinessSummary)
-        )
-      );
-    }
-    metricsSlot.replaceChildren(renderMetrics(info || {}));
-  } catch (e) {
-    metricsSlot.replaceChildren(h("div", { class: "panel error" }, `Metrics unavailable: ${e.message}`));
-  }
-
-  // Earnings
-  api
-    .earnings(symbol)
-    .then((e) => {
-      const banner = renderEarningsBanner(e);
-      if (banner) earningsBannerSlot.replaceChildren(banner);
-      const hist = renderEarningsHistory(e);
-      if (hist) earningsHistorySlot.replaceChildren(hist);
-    })
-    .catch(() => {});
-
-  // Options
-  loadOptions(symbol, optionsSlot);
-
-  // News
-  api
-    .news(symbol)
-    .then(({ items }) => newsSlot.replaceChildren(renderNews(items || [])))
-    .catch((e) => newsSlot.replaceChildren(h("div", { class: "panel error" }, `News unavailable: ${e.message}`)));
 }
 
-function ratingLabel(mean) {
-  if (mean == null) return { label: "—", cls: "muted" };
-  if (mean <= 1.5) return { label: "Strong Buy", cls: "up" };
-  if (mean <= 2.5) return { label: "Buy", cls: "up" };
-  if (mean <= 3.5) return { label: "Hold", cls: "muted" };
-  if (mean <= 4.5) return { label: "Underperform", cls: "down" };
-  return { label: "Sell", cls: "down" };
+function chartDataset(label, rows, value, color, width) {
+  return {
+    label,
+    data: rows
+      .map((row) => ({ x: row.date, y: value(row) }))
+      .filter((point) => point.y != null),
+    borderColor: color,
+    borderWidth: width,
+    pointRadius: 0,
+    fill: false,
+    tension: 0.08,
+  };
 }
 
-function renderAnalyst(a, currentPrice) {
-  const r = ratingLabel(a.recommendationMean);
-  const upside =
-    a.targetMean != null && currentPrice != null
-      ? ((a.targetMean - currentPrice) / currentPrice) * 100
-      : null;
-
-  const head = h(
+function metric(label, value, cls = "") {
+  return element(
     "div",
-    { class: "grid cols-4" },
-    h(
-      "div",
-      {},
-      h("div", { class: "muted small" }, "Consensus"),
-      h("div", { class: r.cls, style: { fontSize: "18px", fontWeight: "600" } }, r.label),
-      h(
-        "div",
-        { class: "muted small" },
-        `${a.numberOfAnalystOpinions ?? "?"} analysts · mean ${fmtNum(a.recommendationMean)}`
-      )
-    ),
-    h(
-      "div",
-      {},
-      h("div", { class: "muted small" }, "Target (mean)"),
-      h("div", { style: { fontSize: "18px", fontWeight: "600" } }, fmtMoney(a.targetMean ?? null)),
-      upside != null
-        ? h(
-            "div",
-            { class: upside >= 0 ? "up small" : "down small" },
-            `${upside >= 0 ? "+" : ""}${upside.toFixed(2)}% vs current`
-          )
-        : null
-    ),
-    h(
-      "div",
-      {},
-      h("div", { class: "muted small" }, "Target range"),
-      h(
-        "div",
-        {},
-        `${fmtMoney(a.targetLow ?? null)} – ${fmtMoney(a.targetHigh ?? null)}`
-      ),
-      h("div", { class: "muted small" }, `Median ${fmtMoney(a.targetMedian ?? null)}`)
-    ),
-    h(
-      "div",
-      {},
-      h("div", { class: "muted small" }, "Rating"),
-      h("div", {}, a.recommendationKey ?? "—")
-    )
+    { class: "panel" },
+    element("div", { class: "muted small" }, label),
+    element("div", { class: `metric-value ${cls}` }, value)
   );
+}
 
-  const panel = h("div", { class: "panel stack" }, h("h2", {}, "Analyst Ratings"), head);
+function formatMultiple(value) {
+  return value == null ? "-" : `${value.toFixed(2)}x`;
+}
 
-  const ug = a.upgradesDowngrades || [];
-  if (ug.length) {
-    const tbl = h(
+function renderTechnicalSnapshot(row) {
+  const windows = [20, 50, 200];
+  return element(
+    "div",
+    { class: "panel table-panel" },
+    element("h2", { class: "section-heading" }, `Technical snapshot - ${row.date}`),
+    element(
       "table",
       {},
-      h(
+      element(
         "thead",
         {},
-        h(
+        element(
           "tr",
           {},
-          h("th", {}, "Date"),
-          h("th", {}, "Firm"),
-          h("th", {}, "Action"),
-          h("th", {}, "From"),
-          h("th", {}, "To")
+          element("th", {}, "Window"),
+          element("th", {}, "Moving average"),
+          element("th", {}, "Rolling high"),
+          element("th", {}, "Rolling low"),
+          element("th", {}, "Average volume"),
+          element("th", {}, "Relative volume")
         )
       ),
-      h(
+      element(
         "tbody",
         {},
-        ...ug.slice(0, 15).map((r) =>
-          h(
+        ...windows.map((window) =>
+          element(
             "tr",
             {},
-            h("td", { class: "muted small" }, String(r.GradeDate ?? r.index ?? "")),
-            h("td", {}, String(r.Firm ?? "")),
-            h("td", {}, String(r.Action ?? "")),
-            h("td", { class: "muted" }, String(r.FromGrade ?? "")),
-            h("td", {}, String(r.ToGrade ?? ""))
+            element("td", {}, `${window} sessions`),
+            element("td", {}, fmtMoney(row.movingAverages?.[window])),
+            element("td", {}, fmtMoney(row.rollingHighs?.[window])),
+            element("td", {}, fmtMoney(row.rollingLows?.[window])),
+            element("td", {}, fmtNumber(row.volumeAverages?.[window], 0)),
+            element("td", {}, formatMultiple(row.relativeVolumes?.[window]))
           )
-        )
-      )
-    );
-    panel.append(
-      h("div", { class: "muted small" }, "Recent Upgrades / Downgrades"),
-      h("div", { class: "scroll-y" }, tbl)
-    );
-  }
-
-  return panel;
-}
-
-function renderMetrics(info) {
-  function pct(v) {
-    return typeof v === "number" ? fmtPct(v * 100) : "—";
-  }
-  function rawPct(v) {
-    return typeof v === "number" ? fmtPct(v) : "—";
-  }
-  function money(v) {
-    return typeof v === "number" ? fmtMoney(v) : "—";
-  }
-  function num(v, d = 2) {
-    return typeof v === "number" ? fmtNum(v, d) : "—";
-  }
-  const groups = [
-    [
-      "Valuation",
-      [
-        ["Market Cap", money(info.marketCap)],
-        ["Enterprise Value", money(info.enterpriseValue)],
-        ["Trailing P/E", num(info.trailingPE)],
-        ["Forward P/E", num(info.forwardPE)],
-        ["Price / Book", num(info.priceToBook)],
-        ["Price / Sales", num(info.priceToSalesTrailing12Months)],
-      ],
-    ],
-    [
-      "Profitability",
-      [
-        ["Profit Margin", pct(info.profitMargins)],
-        ["Operating Margin", pct(info.operatingMargins)],
-        ["Gross Margin", pct(info.grossMargins)],
-        ["Return on Equity", pct(info.returnOnEquity)],
-        ["Return on Assets", pct(info.returnOnAssets)],
-        ["EBITDA", money(info.ebitda)],
-      ],
-    ],
-    [
-      "Financials",
-      [
-        ["Revenue (TTM)", money(info.totalRevenue)],
-        ["Revenue Growth", pct(info.revenueGrowth)],
-        ["Net Income", money(info.netIncomeToCommon)],
-        ["Free Cash Flow", money(info.freeCashflow)],
-        ["Total Cash", money(info.totalCash)],
-        ["Total Debt", money(info.totalDebt)],
-      ],
-    ],
-    [
-      "Trading",
-      [
-        ["52W High", money(info.fiftyTwoWeekHigh)],
-        ["52W Low", money(info.fiftyTwoWeekLow)],
-        ["52W Change", rawPct(info["52WeekChange"])],
-        ["50D Avg", money(info.fiftyDayAverage)],
-        ["200D Avg", money(info.twoHundredDayAverage)],
-        ["Beta", num(info.beta)],
-      ],
-    ],
-    [
-      "Shares & Dividends",
-      [
-        ["Shares Outstanding", num(info.sharesOutstanding, 0)],
-        ["Float", num(info.floatShares, 0)],
-        ["Insider %", pct(info.heldPercentInsiders)],
-        ["Institutional %", pct(info.heldPercentInstitutions)],
-        ["Dividend Yield", pct(info.dividendYield)],
-        ["Dividend Rate", num(info.dividendRate)],
-      ],
-    ],
-    [
-      "Per Share",
-      [
-        ["Trailing EPS", num(info.trailingEps)],
-        ["Forward EPS", num(info.forwardEps)],
-        ["Revenue / Share", num(info.revenuePerShare)],
-        ["Debt / Equity", num(info.debtToEquity)],
-        ["Current Ratio", num(info.currentRatio)],
-        ["Quick Ratio", num(info.quickRatio)],
-      ],
-    ],
-  ];
-
-  return h(
-    "div",
-    { class: "grid cols-3" },
-    ...groups.map(([title, rows]) =>
-      h(
-        "div",
-        { class: "panel" },
-        h("h2", {}, title),
-        ...rows.map(([k, v]) =>
-          h("div", { class: "kv" }, h("span", { class: "k" }, k), h("span", {}, v))
         )
       )
     )
   );
 }
-
-async function loadOptions(symbol, slot) {
-  try {
-    const first = await api.options(symbol);
-    const expirations = first.expirations || [];
-    let expiration = first.expiration || expirations[0] || null;
-    let tab = "calls";
-
-    async function render() {
-      const data = await api.options(symbol, expiration || undefined);
-      const rows = (tab === "calls" ? data.calls : data.puts) || [];
-
-      const select = h(
-        "select",
-        {
-          onchange: (e) => {
-            expiration = e.target.value;
-            render();
-          },
-        },
-        ...expirations.map((x) =>
-          h("option", { value: x, selected: x === expiration ? "selected" : null }, x)
-        )
-      );
-      const callsBtn = h(
-        "button",
-        {
-          class: "ghost" + (tab === "calls" ? " active" : ""),
-          onclick: () => {
-            tab = "calls";
-            render();
-          },
-        },
-        "Calls"
-      );
-      const putsBtn = h(
-        "button",
-        {
-          class: "ghost" + (tab === "puts" ? " active" : ""),
-          onclick: () => {
-            tab = "puts";
-            render();
-          },
-        },
-        "Puts"
-      );
-
-      const body = h("tbody", {});
-      if (!rows.length) {
-        body.append(
-          h(
-            "tr",
-            {},
-            h(
-              "td",
-              { colspan: 9, class: "muted", style: { textAlign: "center", padding: "24px" } },
-              "No options data."
-            )
-          )
-        );
-      } else {
-        for (const r of rows) {
-          const chg = r.percentChange;
-          body.append(
-            h(
-              "tr",
-              { style: r.inTheMoney ? { background: "#131a22" } : null },
-              h("td", { style: { fontWeight: "500" } }, fmtMoney(r.strike ?? null)),
-              h("td", {}, fmtMoney(r.lastPrice ?? null)),
-              h("td", { class: "muted" }, fmtMoney(r.bid ?? null)),
-              h("td", { class: "muted" }, fmtMoney(r.ask ?? null)),
-              h("td", { class: (chg ?? 0) >= 0 ? "up" : "down" }, fmtPct(chg ?? null)),
-              h("td", {}, fmtNum(r.volume ?? null, 0)),
-              h("td", {}, fmtNum(r.openInterest ?? null, 0)),
-              h("td", {}, r.impliedVolatility != null ? fmtPct(r.impliedVolatility * 100) : "—"),
-              h("td", {}, r.inTheMoney ? "✓" : "")
-            )
-          );
-        }
-      }
-
-      slot.className = "panel stack";
-      slot.replaceChildren(
-        h(
-          "div",
-          { class: "row between" },
-          h("h2", { style: { margin: 0 } }, "Options Chain"),
-          h("div", { class: "row" }, select, callsBtn, putsBtn)
-        ),
-        h(
-          "div",
-          { class: "scroll-y" },
-          h(
-            "table",
-            {},
-            h(
-              "thead",
-              {},
-              h(
-                "tr",
-                {},
-                h("th", {}, "Strike"),
-                h("th", {}, "Last"),
-                h("th", {}, "Bid"),
-                h("th", {}, "Ask"),
-                h("th", {}, "Chg %"),
-                h("th", {}, "Vol"),
-                h("th", {}, "OI"),
-                h("th", {}, "IV"),
-                h("th", {}, "ITM")
-              )
-            ),
-            body
-          )
-        )
-      );
-    }
-    await render();
-  } catch (e) {
-    slot.replaceChildren(h("div", { class: "panel error" }, `Options unavailable: ${e.message}`));
-  }
-}
-
-function renderNews(items) {
-  const panel = h("div", { class: "panel" }, h("h2", {}, "News"));
-  if (!items.length) {
-    panel.append(h("div", { class: "muted" }, "No recent news."));
-    return panel;
-  }
-  const list = h("div", { class: "scroll-y stack" });
-  for (const n of items) {
-    const when =
-      typeof n.publishedAt === "number"
-        ? new Date(n.publishedAt * 1000).toLocaleString()
-        : n.publishedAt
-        ? new Date(n.publishedAt).toLocaleString()
-        : "";
-    const text = h(
-      "div",
-      { style: { flex: "1", minWidth: "0" } },
-      h(
-        "a",
-        { href: n.link || "#", target: "_blank", rel: "noreferrer", style: { fontWeight: "500" } },
-        n.title || "Untitled"
-      ),
-      h("div", { class: "muted small" }, `${n.publisher ?? "—"} · ${when}`),
-      n.summary ? h("div", { class: "muted small", style: { marginTop: "4px" } }, n.summary) : null
-    );
-    list.append(
-      h(
-        "div",
-        {
-          class: "news-item",
-          style: { paddingBottom: "12px", borderBottom: "1px solid #1f2530" },
-        },
-        n.thumbnail ? h("img", { class: "news-thumb", src: n.thumbnail, loading: "lazy", alt: "" }) : null,
-        text
-      )
-    );
-  }
-  panel.append(list);
-  return panel;
-}
-
-// ---------- earnings ----------
-
-function daysUntil(iso) {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (isNaN(d.valueOf())) return null;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  return Math.round((target - today) / (1000 * 60 * 60 * 24));
-}
-
-function fmtDate(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (isNaN(d.valueOf())) return String(iso);
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-}
-
-function renderEarningsBanner(e) {
-  if (!e || (!e.nextEarnings && !e.dividendDate && !e.exDividendDate)) return null;
-  const days = daysUntil(e.nextEarnings);
-  const soon = days != null && days >= 0 && days <= 7;
-  const past = days != null && days < 0;
-  const daysText =
-    days == null
-      ? ""
-      : past
-      ? `${-days} day${-days === 1 ? "" : "s"} ago`
-      : days === 0
-      ? "today"
-      : `in ${days} day${days === 1 ? "" : "s"}`;
-
-  const eps = e.epsEstimate || {};
-  const rev = e.revenueEstimate || {};
-
-  const cards = [];
-  if (e.nextEarnings) {
-    cards.push(
-      h(
-        "div",
-        { class: "panel", style: soon ? { borderColor: "#4f8cff" } : null },
-        h("div", { class: "muted small" }, "Next earnings"),
-        h("div", { style: { fontSize: "18px", fontWeight: "600" } }, fmtDate(e.nextEarnings)),
-        daysText
-          ? h("div", { class: soon ? "small" : "muted small", style: soon ? { color: "#4f8cff" } : null }, daysText)
-          : null
-      )
-    );
-  }
-  if (eps.average != null || eps.low != null || eps.high != null) {
-    cards.push(
-      h(
-        "div",
-        { class: "panel" },
-        h("div", { class: "muted small" }, "EPS estimate"),
-        h("div", { style: { fontSize: "18px", fontWeight: "600" } }, fmtNum(eps.average ?? null)),
-        h(
-          "div",
-          { class: "muted small" },
-          `Range ${fmtNum(eps.low ?? null)} – ${fmtNum(eps.high ?? null)}`
-        )
-      )
-    );
-  }
-  if (rev.average != null || rev.low != null || rev.high != null) {
-    cards.push(
-      h(
-        "div",
-        { class: "panel" },
-        h("div", { class: "muted small" }, "Revenue estimate"),
-        h("div", { style: { fontSize: "18px", fontWeight: "600" } }, fmtMoney(rev.average ?? null)),
-        h(
-          "div",
-          { class: "muted small" },
-          `Range ${fmtMoney(rev.low ?? null)} – ${fmtMoney(rev.high ?? null)}`
-        )
-      )
-    );
-  }
-  if (e.exDividendDate || e.dividendDate) {
-    cards.push(
-      h(
-        "div",
-        { class: "panel" },
-        h("div", { class: "muted small" }, "Dividend"),
-        h("div", { style: { fontSize: "14px" } }, `Ex-div ${fmtDate(e.exDividendDate)}`),
-        h("div", { class: "muted small" }, `Pay ${fmtDate(e.dividendDate)}`)
-      )
-    );
-  }
-  if (!cards.length) return null;
-  const cls = cards.length >= 4 ? "grid cols-4" : cards.length === 3 ? "grid cols-3" : "grid cols-2";
-  return h("div", { class: cls }, ...cards);
-}
-
-function renderEarningsHistory(e) {
-  const history = (e && e.history) || [];
-  if (!history.length) return null;
-  const rows = history.filter((r) => r.epsReported != null).slice(0, 8);
-  if (!rows.length) return null;
-
-  const body = h("tbody", {});
-  for (const r of rows) {
-    const beat = (r.surprisePercent ?? 0) >= 0;
-    body.append(
-      h(
-        "tr",
-        {},
-        h("td", {}, fmtDate(r.date)),
-        h("td", {}, fmtNum(r.epsEstimate ?? null)),
-        h("td", { style: { fontWeight: "500" } }, fmtNum(r.epsReported ?? null)),
-        h(
-          "td",
-          { class: beat ? "up" : "down" },
-          r.surprisePercent != null ? fmtPct(r.surprisePercent) : "—"
-        ),
-        h(
-          "td",
-          {},
-          r.surprisePercent != null
-            ? h("span", { class: "pill " + (beat ? "up" : "down") }, beat ? "Beat" : "Miss")
-            : ""
-        )
-      )
-    );
-  }
-
-  return h(
-    "div",
-    { class: "panel stack" },
-    h("h2", {}, "Earnings History"),
-    h(
-      "table",
-      {},
-      h(
-        "thead",
-        {},
-        h(
-          "tr",
-          {},
-          h("th", {}, "Date"),
-          h("th", {}, "EPS estimate"),
-          h("th", {}, "EPS reported"),
-          h("th", {}, "Surprise"),
-          h("th", {}, "")
-        )
-      ),
-      body
-    )
-  );
-}
-
-// ---------- holdings ----------
-
-let holdingsTimer = null;
 
 async function renderHoldings() {
-  clearInterval(holdingsTimer);
-  const root = h("div", { class: "stack" });
-  app.replaceChildren(root);
-
-  const head = h(
-    "div",
-    {},
-    h("h1", {}, "Holdings"),
-    h("div", { class: "muted small" }, "Track lots, allocation, and cached market value.")
-  );
-  const totalsSlot = h("div");
-  const allocationSlot = h("div");
-  const form = h("div");
-  const tableSlot = h("div", { class: "panel", style: { padding: 0, overflow: "auto" } });
-  root.append(head, totalsSlot, allocationSlot, form, tableSlot);
-
-  function mountForm() {
-    const symInput = h("input", {
-      placeholder: "e.g. AAPL",
-      autocomplete: "off",
-      oninput: (e) => (e.target.value = e.target.value.toUpperCase()),
-    });
-    const symWrap = h("div", { class: "search-wrap" });
-    const symResults = h("div", { class: "search-results", style: { display: "none" } });
-    symWrap.append(symInput, symResults);
-
-    let searchTimer = null;
-    symInput.addEventListener("input", () => {
-      clearTimeout(searchTimer);
-      const q = symInput.value.trim();
-      if (!q) {
-        symResults.style.display = "none";
-        return;
-      }
-      searchTimer = setTimeout(async () => {
+  const root = element("div", { class: "stack" });
+  const totals = element("div");
+  const allocations = element("div");
+  const table = element("div", {}, loadingPanel());
+  const formSlot = element("div");
+  const refreshButton = element(
+    "button",
+    {
+      class: "ghost",
+      type: "button",
+      onclick: async () => {
+        refreshButton.disabled = true;
         try {
-          const { results } = await api.search(q);
-          symResults.replaceChildren();
-          if (!results.length) {
-            symResults.style.display = "none";
-            return;
-          }
-          for (const r of results) {
-            symResults.append(
-              h(
-                "button",
-                {
-                  type: "button",
-                  onclick: () => {
-                    symInput.value = r.symbol.toUpperCase();
-                    symResults.style.display = "none";
-                  },
-                },
-                h(
-                  "div",
-                  { class: "row between" },
-                  h("span", { style: { fontWeight: "500" } }, r.symbol),
-                  h("span", { class: "muted small" }, r.exchange ?? "")
-                ),
-                h("div", { class: "muted small" }, r.name ?? "")
-              )
-            );
-          }
-          symResults.style.display = "block";
-        } catch {
-          symResults.style.display = "none";
+          await drawHoldings(totals, allocations, table, true);
+        } finally {
+          refreshButton.disabled = false;
         }
-      }, 200);
-    });
-    document.addEventListener("mousedown", (e) => {
-      if (!symWrap.contains(e.target)) symResults.style.display = "none";
-    });
-
-    const sharesIn = h("input", { placeholder: "e.g. 10", inputmode: "decimal" });
-    const costIn = h("input", { placeholder: "e.g. 150.25", inputmode: "decimal" });
-    const accountIn = h(
-      "select",
-      {},
-      h("option", { value: "" }, "Unspecified"),
-      h("option", { value: "taxable" }, "Taxable"),
-      h("option", { value: "ira" }, "IRA"),
-      h("option", { value: "roth" }, "Roth")
-    );
-    const assetClassIn = h("input", { placeholder: "e.g. equity" });
-    const sectorIn = h("input", { placeholder: "e.g. technology" });
-    const acquiredIn = h("input", { type: "date" });
-    const submit = h("button", { type: "submit" }, "Add holding");
-    const errMsg = h("div", { class: "small down", style: { display: "none", marginTop: "8px" } });
-
-    const formEl = h(
-      "form",
-      {
-        class: "panel",
-        onsubmit: async (e) => {
-          e.preventDefault();
-          errMsg.style.display = "none";
-
-          const sym = symInput.value.trim().toUpperCase();
-          const sh = parseFloat(sharesIn.value);
-          const cb = parseFloat(costIn.value);
-
-          if (!sym) return showErr("Enter a ticker symbol.");
-          if (!isFinite(sh) || sh <= 0) return showErr("Shares must be a positive number.");
-          if (!isFinite(cb) || cb < 0) return showErr("Cost per share must be a non-negative number.");
-
-          submit.disabled = true;
-          try {
-            await api.holdingAdd(sym, sh, cb, {
-              account: accountIn.value || null,
-              assetClass: assetClassIn.value.trim() || null,
-              sector: sectorIn.value.trim() || null,
-              acquired: acquiredIn.value || null,
-            });
-            symInput.value = "";
-            sharesIn.value = "";
-            costIn.value = "";
-            accountIn.value = "";
-            assetClassIn.value = "";
-            sectorIn.value = "";
-            acquiredIn.value = "";
-            symResults.style.display = "none";
-            await draw();
-          } catch (err) {
-            showErr(`Could not add holding: ${err.message}`);
-          } finally {
-            submit.disabled = false;
-          }
-        },
       },
-      h(
+    },
+    "Refresh EOD data"
+  );
+
+  root.append(
+    element(
+      "div",
+      { class: "row between page-heading" },
+      element(
         "div",
-        { class: "row", style: { alignItems: "flex-end" } },
-        h(
-          "div",
-          { style: { minWidth: "220px", flex: "1" } },
-          h("div", { class: "muted small", style: { marginBottom: "4px" } }, "Symbol"),
-          symWrap
-        ),
-        h(
-          "div",
-          {},
-          h("div", { class: "muted small", style: { marginBottom: "4px" } }, "Shares"),
-          sharesIn
-        ),
-        h(
-          "div",
-          {},
-          h("div", { class: "muted small", style: { marginBottom: "4px" } }, "Cost / share"),
-          costIn
-        ),
-        h(
-          "div",
-          {},
-          h("div", { class: "muted small", style: { marginBottom: "4px" } }, "Account"),
-          accountIn
-        ),
-        h(
-          "div",
-          {},
-          h("div", { class: "muted small", style: { marginBottom: "4px" } }, "Asset class"),
-          assetClassIn
-        ),
-        h(
-          "div",
-          {},
-          h("div", { class: "muted small", style: { marginBottom: "4px" } }, "Sector"),
-          sectorIn
-        ),
-        h(
-          "div",
-          {},
-          h("div", { class: "muted small", style: { marginBottom: "4px" } }, "Acquired"),
-          acquiredIn
-        ),
-        submit
+        {},
+        element("h1", {}, "Holdings"),
+        element("div", { class: "muted small" }, "Current lots, allocation, and stored market value.")
       ),
-      errMsg
-    );
+      refreshButton
+    ),
+    totals,
+    allocations,
+    formSlot,
+    table
+  );
+  app.replaceChildren(root);
+  renderHoldingForm(formSlot, async () => drawHoldings(totals, allocations, table));
+  await drawHoldings(totals, allocations, table);
+}
 
-    function showErr(msg) {
-      errMsg.textContent = msg;
-      errMsg.style.display = "block";
-    }
+function renderHoldingForm(slot, onSaved) {
+  const symbol = element("input", {
+    placeholder: "AAPL",
+    autocomplete: "off",
+    oninput: (event) => {
+      event.target.value = event.target.value.toUpperCase();
+    },
+  });
+  const shares = element("input", { placeholder: "10", inputmode: "decimal" });
+  const cost = element("input", { placeholder: "150.25", inputmode: "decimal" });
+  const account = element(
+    "select",
+    {},
+    element("option", { value: "" }, "Unspecified"),
+    element("option", { value: "taxable" }, "Taxable"),
+    element("option", { value: "ira" }, "IRA"),
+    element("option", { value: "roth" }, "Roth")
+  );
+  const assetClass = element("input", { placeholder: "Equity" });
+  const sector = element("input", { placeholder: "Technology" });
+  const acquired = element("input", { type: "date" });
+  const message = element("div", { class: "small down", hidden: "hidden" });
+  const submit = element("button", { type: "submit" }, "Add holding");
 
-    form.replaceChildren(formEl);
-  }
-  mountForm();
+  const form = element(
+    "form",
+    {
+      class: "panel stack",
+      onsubmit: async (event) => {
+        event.preventDefault();
+        message.hidden = true;
+        const ticker = symbol.value.trim().toUpperCase();
+        const quantity = Number.parseFloat(shares.value);
+        const basis = Number.parseFloat(cost.value);
+        if (!ticker) return showFormError(message, "Enter a ticker symbol.");
+        if (!Number.isFinite(quantity) || quantity <= 0) {
+          return showFormError(message, "Shares must be greater than zero.");
+        }
+        if (!Number.isFinite(basis) || basis < 0) {
+          return showFormError(message, "Cost per share cannot be negative.");
+        }
+        submit.disabled = true;
+        try {
+          await api.holdingAdd(ticker, quantity, basis, {
+            account: account.value || null,
+            assetClass: assetClass.value.trim() || null,
+            sector: sector.value.trim() || null,
+            acquired: acquired.value || null,
+          });
+          for (const input of [symbol, shares, cost, assetClass, sector, acquired]) {
+            input.value = "";
+          }
+          account.value = "";
+          await onSaved();
+        } catch (error) {
+          showFormError(message, `Could not add holding: ${error.message}`);
+        } finally {
+          submit.disabled = false;
+        }
+      },
+    },
+    element(
+      "div",
+      { class: "holding-form-grid" },
+      field("Symbol", symbol),
+      field("Shares", shares),
+      field("Cost per share", cost),
+      field("Account", account),
+      field("Asset class", assetClass),
+      field("Sector", sector),
+      field("Acquired", acquired),
+      element("div", { class: "form-action" }, submit)
+    ),
+    message
+  );
+  slot.replaceChildren(form);
+}
 
-  async function draw() {
-    const data = await api.holdings();
-    const t = data.totals || {};
-    const tUp = (t.gain ?? 0) >= 0;
-    totalsSlot.replaceChildren(
-      h(
+function showFormError(node, message) {
+  node.textContent = message;
+  node.hidden = false;
+}
+
+async function drawHoldings(totals, allocations, table, refresh = false) {
+  table.replaceChildren(loadingPanel());
+  try {
+    const data = await api.holdings(refresh);
+    const summary = data.totals || {};
+    totals.replaceChildren(
+      element(
         "div",
         { class: "grid cols-4" },
-        totalCard("Cost basis", fmtMoney(t.cost)),
-        totalCard("Market value", fmtMoney(t.value)),
-        totalCard("Unrealized P/L", fmtMoney(t.gain), tUp ? "up" : "down"),
-        totalCard("Return", fmtPct(t.gainPercent), tUp ? "up" : "down")
+        metric("Cost basis", fmtMoney(summary.cost)),
+        metric("Market value", fmtMoney(summary.value)),
+        metric("Unrealized gain", fmtMoney(summary.gain), changeClass(summary.gain)),
+        metric("Return", fmtPercent(summary.gainPercent), changeClass(summary.gainPercent))
       )
     );
-    const allocations = data.allocations || {};
-    allocationSlot.replaceChildren(
-      h(
+    allocations.replaceChildren(
+      element(
         "div",
         { class: "grid cols-3" },
-        allocationCard("By account", allocations.account || []),
-        allocationCard("By asset class", allocations.assetClass || []),
-        allocationCard("By sector", allocations.sector || [])
+        allocationPanel("By account", data.allocations?.account || []),
+        allocationPanel("By asset class", data.allocations?.assetClass || []),
+        allocationPanel("By sector", data.allocations?.sector || [])
       )
     );
 
-    const tbl = h(
-      "table",
-      {},
-      h(
-        "thead",
-        {},
-        h(
-          "tr",
-          {},
-          h("th", {}, "Symbol"),
-          h("th", {}, "Account / Class"),
-          h("th", {}, "Shares"),
-          h("th", {}, "Cost / share"),
-          h("th", {}, "Price"),
-          h("th", {}, "Market value"),
-          h("th", {}, "P/L"),
-          h("th", {}, "Return"),
-          h("th", {}, "Weight"),
-          h("th", {})
-        )
-      ),
-      h("tbody", {})
-    );
-    const body = tbl.querySelector("tbody");
+    const body = element("tbody");
     if (!data.holdings.length) {
       body.append(
-        h(
+        element(
           "tr",
           {},
-          h(
-            "td",
-            { colspan: 10, class: "muted", style: { textAlign: "center", padding: "24px" } },
-            "No holdings yet."
-          )
+          element("td", { colspan: 10, class: "muted empty-cell" }, "No holdings yet.")
         )
       );
     } else {
       for (const holding of data.holdings) {
-        const up = (holding.gain ?? 0) >= 0;
         body.append(
-          h(
+          element(
             "tr",
             {},
-            h("td", {}, h("a", { href: `#/stock/${holding.symbol}` }, holding.symbol)),
-            h(
+            element("td", {}, element("a", { href: `#/stock/${holding.symbol}` }, holding.symbol)),
+            element(
               "td",
               {},
-              h("div", {}, holding.account || "—"),
-              h(
+              element("div", {}, holding.account || "-"),
+              element(
                 "div",
                 { class: "muted small" },
-                [holding.assetClass, holding.sector].filter(Boolean).join(" · ") || ""
+                [holding.assetClass, holding.sector].filter(Boolean).join(" - ")
               )
             ),
-            h("td", {}, fmtNum(holding.shares, 4)),
-            h("td", {}, fmtMoney(holding.costBasis)),
-            h("td", {}, fmtMoney(holding.price ?? null)),
-            h("td", {}, fmtMoney(holding.marketValue ?? null)),
-            h("td", { class: up ? "up" : "down" }, fmtMoney(holding.gain ?? null)),
-            h("td", { class: up ? "up" : "down" }, fmtPct(holding.gainPercent ?? null)),
-            h(
-              "td",
-              {},
-              holding.weightPercent == null ? "—" : `${fmtNum(holding.weightPercent)}%`
-            ),
-            h(
+            element("td", {}, fmtNumber(holding.shares, 4)),
+            element("td", {}, fmtMoney(holding.costBasis)),
+            element("td", {}, fmtMoney(holding.price)),
+            element("td", {}, fmtMoney(holding.marketValue)),
+            element("td", { class: changeClass(holding.gain) }, fmtMoney(holding.gain)),
+            element("td", { class: changeClass(holding.gainPercent) }, fmtPercent(holding.gainPercent)),
+            element("td", {}, fmtPercent(holding.weightPercent, false)),
+            element(
               "td",
               { class: "right" },
-              h(
+              element(
                 "button",
                 {
                   class: "danger",
+                  type: "button",
                   onclick: async () => {
                     await api.holdingRemove(holding.id);
-                    await draw();
+                    await drawHoldings(totals, allocations, table);
                   },
                 },
                 "Remove"
@@ -1504,125 +661,128 @@ async function renderHoldings() {
         );
       }
     }
-    tableSlot.replaceChildren(tbl);
-  }
-
-  function totalCard(label, value, cls = "") {
-    return h(
-      "div",
-      { class: "panel" },
-      h("div", { class: "muted small" }, label),
-      h("div", { class: cls, style: { fontSize: "20px", fontWeight: "600" } }, value)
-    );
-  }
-
-  function allocationCard(title, rows) {
-    return h(
-      "div",
-      { class: "panel" },
-      h("h2", {}, title),
-      rows.length
-        ? rows.map((row) =>
-            h(
-              "div",
-              { class: "allocation-row" },
-              h(
-                "div",
-                { class: "row between small" },
-                h("span", {}, row.name),
-                h("span", { class: "muted" }, `${fmtNum(row.weightPercent)}%`)
-              ),
-              h(
-                "div",
-                { class: "allocation-track" },
-                h("span", {
-                  style: { width: `${Math.max(0, Math.min(100, row.weightPercent || 0))}%` },
-                })
+    table.replaceChildren(
+      element(
+        "div",
+        { class: "panel table-panel" },
+        element(
+          "table",
+          {},
+          element(
+            "thead",
+            {},
+            element(
+              "tr",
+              {},
+              ...["Symbol", "Account / class", "Shares", "Cost", "Close", "Value", "Gain", "Return", "Weight", ""].map(
+                (label) => element("th", {}, label)
               )
             )
-          )
-        : h("div", { class: "muted small" }, "No classified positions")
+          ),
+          body
+        )
+      )
     );
+  } catch (error) {
+    table.replaceChildren(errorPanel(`Holdings unavailable: ${error.message}`));
   }
-
-  await draw();
-  holdingsTimer = setInterval(draw, 30000);
 }
 
-// ---------- router ----------
-
-function router() {
-  const hash = location.hash.replace(/^#/, "") || "/";
-  document.querySelectorAll("nav a").forEach((a) => {
-    const href = a.getAttribute("href").replace(/^#/, "");
-    a.classList.toggle("active", href === hash);
-  });
-  if (hash === "/" || hash === "") return renderWatchlist();
-  if (hash === "/holdings") return renderHoldings();
-  const m = hash.match(/^\/stock\/(.+)$/);
-  if (m) return renderStock(decodeURIComponent(m[1]));
-  app.replaceChildren(h("div", { class: "panel" }, "Not found. ", h("a", { href: "#/" }, "Home")));
+function allocationPanel(title, rows) {
+  return element(
+    "div",
+    { class: "panel" },
+    element("h2", {}, title),
+    rows.length
+      ? rows.map((row) =>
+          element(
+            "div",
+            { class: "allocation-row" },
+            element(
+              "div",
+              { class: "row between small" },
+              element("span", {}, row.name),
+              element("span", { class: "muted" }, fmtPercent(row.weightPercent, false))
+            ),
+            element(
+              "div",
+              { class: "allocation-track" },
+              element("span", {
+                style: { width: `${Math.max(0, Math.min(100, row.weightPercent || 0))}%` },
+              })
+            )
+          )
+        )
+      : element("div", { class: "muted small" }, "No classified positions")
+  );
 }
-
-window.addEventListener("hashchange", router);
-router();
-
-// ---------- market strip ----------
 
 const MARKET_INDICES = [
   { symbol: "^GSPC", label: "S&P 500" },
   { symbol: "^IXIC", label: "NASDAQ" },
   { symbol: "^DJI", label: "DOW" },
   { symbol: "^RUT", label: "RUSSELL" },
-  { symbol: "^VIX", label: "VIX" },
-  { symbol: "^TNX", label: "10Y" },
-  { symbol: "BTC-USD", label: "BTC" },
-  { symbol: "ETH-USD", label: "ETH" },
 ];
 
-async function renderMarketStrip() {
+async function renderMarketStrip(refresh = false) {
   const strip = document.getElementById("market-strip");
   if (!strip) return;
   if (!strip.firstChild) {
     strip.replaceChildren(
-      h(
-        "div",
-        { class: "market-strip-inner muted" },
-        "Loading market data…"
-      )
+      element("div", { class: "market-strip-inner muted" }, "Loading EOD market data...")
     );
   }
   try {
-    const { quotes } = await api.quotes(MARKET_INDICES.map((m) => m.symbol));
-    const bySym = new Map(quotes.map((q) => [q.symbol, q]));
-    const inner = h("div", { class: "market-strip-inner" });
-    for (const { symbol, label } of MARKET_INDICES) {
-      const q = bySym.get(symbol);
-      if (!q || q.error || q.price == null) continue;
-      const up = (q.change ?? 0) >= 0;
-      // Indices use different magnitudes than stocks; format as plain numbers.
-      const price = q.price.toLocaleString("en-US", { maximumFractionDigits: 2 });
-      const pct = fmtPct(q.changePercent);
-      inner.append(
-        h(
+    const { quotes } = await api.quotes(
+      MARKET_INDICES.map((market) => market.symbol),
+      refresh
+    );
+    const bySymbol = new Map(quotes.map((quote) => [quote.symbol, quote]));
+    const content = element("div", { class: "market-strip-inner" });
+    for (const market of MARKET_INDICES) {
+      const quote = bySymbol.get(market.symbol);
+      if (!quote || quote.error) continue;
+      content.append(
+        element(
           "span",
           { class: "market-item" },
-          h("span", { class: "sym" }, label),
-          h("span", { class: "price" }, price),
-          h("span", { class: up ? "up small" : "down small" }, pct)
+          element("span", { class: "sym" }, market.label),
+          element("span", { class: "price" }, fmtNumber(quote.price)),
+          element("span", { class: changeClass(quote.changePercent) }, fmtPercent(quote.changePercent)),
+          element("span", { class: "muted small" }, quote.asOf)
         )
       );
     }
-    if (!inner.childNodes.length) {
-      inner.append(h("span", { class: "muted small" }, "Market data unavailable."));
+    if (!content.childNodes.length) {
+      content.append(element("span", { class: "muted small" }, "Market data unavailable."));
     }
-    strip.replaceChildren(inner);
-  } catch (e) {
+    strip.replaceChildren(content);
+  } catch (error) {
     strip.replaceChildren(
-      h("div", { class: "market-strip-inner muted small" }, `Market data unavailable: ${e.message}`)
+      element("div", { class: "market-strip-inner muted small" }, `Market data unavailable: ${error.message}`)
     );
   }
 }
 
+function router() {
+  if (priceChart) {
+    priceChart.destroy();
+    priceChart = null;
+  }
+  const hash = location.hash.replace(/^#/, "") || "/";
+  for (const link of document.querySelectorAll("nav a")) {
+    const href = link.getAttribute("href").replace(/^#/, "");
+    link.classList.toggle("active", href === hash);
+  }
+  if (hash === "/") return renderWatchlist();
+  if (hash === "/holdings") return renderHoldings();
+  const stock = hash.match(/^\/stock\/(.+)$/);
+  if (stock) return renderStock(decodeURIComponent(stock[1]));
+  app.replaceChildren(
+    element("div", { class: "panel" }, "Page not found. ", element("a", { href: "#/" }, "Return home"))
+  );
+}
+
+window.addEventListener("hashchange", router);
+router();
 renderMarketStrip();
-setInterval(renderMarketStrip, 30000);

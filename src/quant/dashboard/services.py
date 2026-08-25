@@ -4,8 +4,10 @@ import polars as pl
 
 from quant.analysis import summarize_allocation, summarize_portfolio
 from quant.market_analysis import analyze_symbols
+from quant.market_data import latest_market_snapshot
 from quant.market_store import MarketDataRepository
 from quant.portfolio import analyze_positions
+from quant.quotes import resolve_market_history
 from quant.user_data import UserDataRepository
 
 
@@ -28,6 +30,62 @@ class DashboardService:
 
     def remove_watchlist(self, symbol: str) -> list[str]:
         return self.repository.remove_watchlist(symbol)
+
+    def quotes(self, symbols: list[str], refresh: bool = False) -> dict:
+        symbols = list(
+            dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip())
+        )
+        if not symbols:
+            return {"quotes": []}
+        resolve_market_history(
+            symbols,
+            self.market_repository,
+            ["Date", "Symbol", "Close"],
+            minimum_sessions=2,
+            refresh=refresh,
+        )
+        history = self.market_repository.load(
+            symbols,
+            columns=["Date", "Symbol", "Company", "Close", "Volume"],
+        ).sort(["Symbol", "Date"])
+        history = history.with_columns(
+            pl.col("Close").shift(1).over("Symbol").alias("Previous Close")
+        )
+        latest = {
+            row["Symbol"]: row
+            for row in latest_market_snapshot(history).to_dicts()
+        }
+        quotes = []
+        for symbol in symbols:
+            row = latest.get(symbol)
+            if row is None:
+                quotes.append({"symbol": symbol, "error": True})
+                continue
+            previous = row["Previous Close"]
+            change = row["Close"] - previous if previous is not None else None
+            change_percent = (
+                change / previous * 100.0 if change is not None and previous else None
+            )
+            quotes.append(
+                {
+                    "symbol": symbol,
+                    "name": row["Company"] or symbol,
+                    "price": row["Close"],
+                    "previousClose": previous,
+                    "change": change,
+                    "changePercent": change_percent,
+                    "volume": row["Volume"],
+                    "asOf": row["Date"].isoformat(),
+                    "currency": "USD",
+                }
+            )
+        return {"quotes": quotes}
+
+    def quote(self, symbol: str, refresh: bool = False) -> dict:
+        quote = self.quotes([symbol], refresh)["quotes"][0]
+        if quote.get("error"):
+            raise ValueError(f"Market data unavailable for {symbol.upper()}")
+        return quote
 
     def holdings(self, refresh: bool = False) -> dict:
         frame = self.repository.positions_frame()

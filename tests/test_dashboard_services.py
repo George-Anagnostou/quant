@@ -8,10 +8,38 @@ import polars as pl
 
 from quant.analysis import analyze_portfolio
 from quant.dashboard.services import DashboardService
+from quant.market_store import MarketDataRepository
 from quant.user_data import UserDataRepository
 
 
 class DashboardServiceTests(unittest.TestCase):
+    def test_serves_eod_quotes_from_shared_market_history(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "quant.db"
+            market_repository = MarketDataRepository(path)
+            market_repository.save(
+                pl.DataFrame(
+                    {
+                        "Date": [date(2026, 8, 20), date(2026, 8, 21)],
+                        "Symbol": ["AAPL", "AAPL"],
+                        "Company": ["Apple Inc.", "Apple Inc."],
+                        "Close": [100.0, 125.0],
+                        "Volume": [1_000, 2_000],
+                    }
+                )
+            )
+            service = DashboardService(
+                UserDataRepository(path),
+                market_repository,
+            )
+
+            quote = service.quote("aapl")
+
+        self.assertEqual(quote["name"], "Apple Inc.")
+        self.assertEqual(quote["change"], 25.0)
+        self.assertEqual(quote["changePercent"], 25.0)
+        self.assertEqual(quote["asOf"], "2026-08-21")
+
     @patch("quant.dashboard.services.analyze_positions")
     def test_values_persisted_lots_with_core_analysis(self, analyze_positions) -> None:
         market_data = pl.DataFrame(
