@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import polars as pl
 
 from quant.market_analysis import get_index_symbols
-from quant.storage import save_market_data
+from quant.market_store import MarketDataRepository
 
 
 class MarketAnalysisUniverseTests(unittest.TestCase):
@@ -19,10 +19,10 @@ class MarketAnalysisUniverseTests(unittest.TestCase):
         )
 
         with TemporaryDirectory() as directory:
-            path = Path(directory) / "index.parquet"
-            save_market_data(cached, path)
+            repository = MarketDataRepository(Path(directory) / "quant.db")
+            repository.save_universe("sp500", cached)
 
-            self.assertEqual(get_index_symbols(path), ["AAPL", "MSFT"])
+            self.assertEqual(get_index_symbols(repository), ["AAPL", "MSFT"])
 
 
 if __name__ == "__main__":

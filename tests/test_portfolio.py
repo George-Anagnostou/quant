@@ -7,7 +7,7 @@ from unittest.mock import patch
 import polars as pl
 
 from quant.portfolio import analyze_positions, load_portfolio_market_data
-from quant.storage import load_market_data, save_market_data
+from quant.market_store import MarketDataRepository
 
 
 class PortfolioInputTests(unittest.TestCase):
@@ -33,27 +33,26 @@ class PortfolioInputTests(unittest.TestCase):
         get_market_history.return_value = downloaded
 
         with TemporaryDirectory() as directory:
-            primary_path = Path(directory) / "market.parquet"
-            portfolio_path = Path(directory) / "portfolio.parquet"
-            save_market_data(primary_data, primary_path)
+            repository = MarketDataRepository(Path(directory) / "quant.db")
+            repository.save(primary_data)
 
-            result = load_portfolio_market_data(
-                ["AAPL", "VOO"], primary_path, portfolio_path
-            )
+            result = load_portfolio_market_data(["AAPL", "VOO"], repository)
 
             get_market_history.assert_called_once_with(["VOO"])
             self.assertEqual(set(result.get_column("Symbol")), {"AAPL", "VOO"})
             self.assertEqual(
-                load_market_data(portfolio_path).get_column("Symbol").to_list(),
-                ["VOO"],
+                repository.load(["VOO"]).get_column("Symbol").to_list(), ["VOO"]
             )
 
             get_market_history.reset_mock()
-            load_portfolio_market_data(["AAPL", "VOO"], primary_path, portfolio_path)
+            load_portfolio_market_data(["AAPL", "VOO"], repository)
             get_market_history.assert_not_called()
 
     @patch("quant.portfolio.load_portfolio_market_data")
-    def test_analyzes_positions_through_shared_quote_resolution(self, load_market_data) -> None:
+    def test_analyzes_positions_through_shared_quote_resolution(
+        self,
+        load_portfolio_market_data,
+    ) -> None:
         positions = pl.DataFrame(
             {
                 "Symbol": ["AAPL", "AAPL"],
@@ -62,7 +61,7 @@ class PortfolioInputTests(unittest.TestCase):
                 "Account": ["taxable", "roth"],
             }
         )
-        load_market_data.return_value = pl.DataFrame(
+        load_portfolio_market_data.return_value = pl.DataFrame(
             {
                 "Date": [date(2026, 8, 21)],
                 "Symbol": ["AAPL"],
@@ -75,8 +74,8 @@ class PortfolioInputTests(unittest.TestCase):
 
         self.assertEqual(result.height, 2)
         self.assertEqual(result.get_column("Market Value").to_list(), [250.0, 125.0])
-        load_market_data.assert_called_once()
-        self.assertEqual(load_market_data.call_args.args[0], ["AAPL"])
+        load_portfolio_market_data.assert_called_once()
+        self.assertEqual(load_portfolio_market_data.call_args.args[0], ["AAPL"])
 
 
 if __name__ == "__main__":

@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import polars as pl
 
 from quant.analysis import summarize_allocation, summarize_portfolio
-from quant.market_analysis import DEFAULT_MARKET_ANALYSIS_PATH, analyze_symbols
-from quant.portfolio import (
-    DEFAULT_PORTFOLIO_MARKET_DATA_PATH,
-    analyze_positions,
-)
-from quant.storage import DEFAULT_MARKET_DATA_PATH
+from quant.market_analysis import analyze_symbols
+from quant.market_store import MarketDataRepository
+from quant.portfolio import analyze_positions
 from quant.user_data import UserDataRepository
 
 
@@ -18,14 +13,12 @@ class DashboardService:
     def __init__(
         self,
         repository: UserDataRepository | None = None,
-        index_cache_path: Path = DEFAULT_MARKET_DATA_PATH,
-        portfolio_cache_path: Path = DEFAULT_PORTFOLIO_MARKET_DATA_PATH,
-        analysis_cache_path: Path = DEFAULT_MARKET_ANALYSIS_PATH,
+        market_repository: MarketDataRepository | None = None,
     ) -> None:
         self.repository = repository or UserDataRepository()
-        self.index_cache_path = index_cache_path
-        self.portfolio_cache_path = portfolio_cache_path
-        self.analysis_cache_path = analysis_cache_path
+        self.market_repository = market_repository or MarketDataRepository(
+            self.repository.path
+        )
 
     def watchlist(self) -> list[str]:
         return self.repository.list_watchlist()
@@ -56,8 +49,7 @@ class DashboardService:
 
         analysis = analyze_positions(
             frame,
-            self.index_cache_path,
-            self.portfolio_cache_path,
+            self.market_repository,
             refresh,
         )
         summary = summarize_portfolio(analysis).row(0, named=True)
@@ -112,8 +104,7 @@ class DashboardService:
             [symbol],
             windows,
             price_column,
-            self.index_cache_path,
-            self.analysis_cache_path,
+            self.market_repository,
             refresh,
         )
         rows = []

@@ -19,7 +19,7 @@ class CliTests(unittest.TestCase):
     def test_scopes_options_to_each_command(self) -> None:
         parser = _build_parser()
 
-        index = parser.parse_args(["index", "--cache", "index.parquet"])
+        index = parser.parse_args(["index", "--database", "market.db"])
         portfolio = parser.parse_args(["portfolio", "--database", "holdings.db"])
         market = parser.parse_args(
             [
@@ -34,7 +34,7 @@ class CliTests(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(index.cache, Path("index.parquet"))
+        self.assertEqual(index.database, Path("market.db"))
         self.assertEqual(portfolio.database, Path("holdings.db"))
         self.assertEqual(market.symbols, ["AAPL", "MSFT"])
         self.assertEqual(market.windows, [5, 20])

@@ -171,6 +171,31 @@ class MarketDataRepository:
         )
         return frame.select(selected)
 
+    def save_universe(
+        self,
+        universe: str,
+        constituents: pl.DataFrame,
+        observed_on: date | None = None,
+    ) -> None:
+        self.initialize()
+        _require_columns(constituents, {"Symbol"})
+        company = (
+            pl.col("Company")
+            if "Company" in constituents.columns
+            else pl.lit(None).alias("Company")
+        )
+        symbols = constituents.select("Symbol", company).unique(
+            subset="Symbol", keep="last", maintain_order=True
+        )
+        with database_connection(self.path) as connection:
+            security_ids = self._upsert_securities(connection, symbols)
+            self._save_universe(
+                connection,
+                universe,
+                security_ids,
+                observed_on or date.today(),
+            )
+
     def list_universe_symbols(self, universe: str) -> list[str]:
         self.initialize()
         with database_connection(self.path) as connection:
@@ -200,7 +225,7 @@ class MarketDataRepository:
     def _upsert_securities(
         connection,
         symbols: pl.DataFrame,
-        provider: str,
+        provider: str | None = None,
     ) -> dict[str, str]:
         security_ids = {}
         for row in symbols.to_dicts():
@@ -219,16 +244,18 @@ class MarketDataRepository:
                 """,
                 (security_id, symbol, row["Company"]),
             )
-            connection.execute(
-                """
-                INSERT INTO provider_symbols(provider, provider_symbol, security_id)
-                VALUES (?, ?, ?)
-                ON CONFLICT(provider, provider_symbol) DO UPDATE SET
-                    security_id = excluded.security_id,
-                    active = 1
-                """,
-                (provider, symbol, security_id),
-            )
+            if provider is not None:
+                connection.execute(
+                    """
+                    INSERT INTO provider_symbols(
+                        provider, provider_symbol, security_id
+                    ) VALUES (?, ?, ?)
+                    ON CONFLICT(provider, provider_symbol) DO UPDATE SET
+                        security_id = excluded.security_id,
+                        active = 1
+                    """,
+                    (provider, symbol, security_id),
+                )
             security_ids[row["Symbol"]] = security_id
         return security_ids
 
