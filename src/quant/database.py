@@ -18,6 +18,11 @@ def initialize_database(path: Path = DEFAULT_DATABASE_PATH) -> None:
             connection.execute("BEGIN IMMEDIATE")
             _migrate_user_data(connection)
             connection.execute("PRAGMA user_version = 1")
+        if version < 2:
+            if not connection.in_transaction:
+                connection.execute("BEGIN IMMEDIATE")
+            _migrate_market_data(connection)
+            connection.execute("PRAGMA user_version = 2")
 
 
 @contextmanager
@@ -167,6 +172,125 @@ def _create_watchlist(connection: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
+
+
+def _migrate_market_data(connection: sqlite3.Connection) -> None:
+    statements = [
+        """
+        CREATE TABLE IF NOT EXISTS securities (
+            id TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            company TEXT,
+            exchange TEXT,
+            security_type TEXT NOT NULL DEFAULT 'equity',
+            currency TEXT NOT NULL DEFAULT 'USD',
+            active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS provider_symbols (
+            provider TEXT NOT NULL,
+            provider_symbol TEXT NOT NULL,
+            security_id TEXT NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+            active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+            PRIMARY KEY(provider, provider_symbol)
+        ) WITHOUT ROWID
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS daily_bars (
+            security_id TEXT NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+            session_date TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            open REAL CHECK (open IS NULL OR open > 0),
+            high REAL CHECK (high IS NULL OR high > 0),
+            low REAL CHECK (low IS NULL OR low > 0),
+            close REAL NOT NULL CHECK (close > 0),
+            adjusted_close REAL CHECK (adjusted_close IS NULL OR adjusted_close > 0),
+            volume INTEGER CHECK (volume IS NULL OR volume >= 0),
+            retrieved_at TEXT NOT NULL,
+            CHECK (high IS NULL OR low IS NULL OR high >= low),
+            CHECK (high IS NULL OR open IS NULL OR high >= open),
+            CHECK (high IS NULL OR high >= close),
+            CHECK (low IS NULL OR open IS NULL OR low <= open),
+            CHECK (low IS NULL OR low <= close),
+            PRIMARY KEY(security_id, session_date, provider)
+        ) WITHOUT ROWID
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS daily_bars_provider_date_idx
+        ON daily_bars(provider, session_date)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS universes (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS universe_memberships (
+            universe_id TEXT NOT NULL REFERENCES universes(id) ON DELETE CASCADE,
+            security_id TEXT NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+            observed_on TEXT NOT NULL,
+            sort_order INTEGER NOT NULL,
+            PRIMARY KEY(universe_id, security_id, observed_on)
+        ) WITHOUT ROWID
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS universe_memberships_observation_idx
+        ON universe_memberships(universe_id, observed_on, sort_order)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS ingestion_runs (
+            id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            status TEXT NOT NULL,
+            requested_symbols INTEGER NOT NULL DEFAULT 0,
+            start_date TEXT,
+            end_date TEXT,
+            rows_received INTEGER NOT NULL DEFAULT 0,
+            rows_written INTEGER NOT NULL DEFAULT 0,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            error TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS ingestion_issues (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ingestion_run_id TEXT REFERENCES ingestion_runs(id) ON DELETE CASCADE,
+            security_id TEXT REFERENCES securities(id) ON DELETE CASCADE,
+            session_date TEXT,
+            severity TEXT NOT NULL,
+            code TEXT NOT NULL,
+            message TEXT NOT NULL,
+            observed_value TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS sync_requests (
+            id TEXT PRIMARY KEY,
+            user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+            security_id TEXT NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+            provider TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            started_at TEXT,
+            completed_at TEXT,
+            error TEXT
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS sync_requests_status_idx
+        ON sync_requests(status, requested_at)
+        """,
+    ]
+    for statement in statements:
+        connection.execute(statement)
     connection.execute(
         """
         CREATE INDEX watchlist_user_order_idx
