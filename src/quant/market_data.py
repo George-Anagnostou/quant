@@ -167,13 +167,17 @@ def get_sp500_market_data() -> pl.DataFrame:
     return latest_market_snapshot(get_sp500_market_history())
 
 
-def get_sp500_market_history() -> pl.DataFrame:
-    constituents = get_sp500_constituents()
+def get_sp500_market_history(
+    constituents: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    constituents = (
+        constituents if constituents is not None else get_sp500_constituents()
+    )
     history = get_market_history(constituents.get_column("Symbol").to_list())
     return constituents.join(
         history,
         on="Symbol",
-        how="left",
+        how="inner",
         validate="1:m",
     ).select(
         "Date",

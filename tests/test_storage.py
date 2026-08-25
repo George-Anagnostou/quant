@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 import polars as pl
 from polars.testing import assert_frame_equal
 
+from quant.database import database_connection
 from quant.market_store import MarketDataRepository
 
 
@@ -59,6 +60,25 @@ class MarketDataStorageTests(unittest.TestCase):
             self.assertEqual(
                 repository.load(provider="replacement")["Close"][0], 225.75
             )
+
+    def test_records_yahoo_share_class_symbol(self) -> None:
+        market_data = pl.DataFrame(
+            {
+                "Date": [date(2026, 8, 21)],
+                "Symbol": ["BRK.B"],
+                "Close": [500.0],
+            }
+        )
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "quant.db"
+            MarketDataRepository(path).save(market_data)
+
+            with database_connection(path) as connection:
+                provider_symbol = connection.execute(
+                    "SELECT provider_symbol FROM provider_symbols"
+                ).fetchone()[0]
+            self.assertEqual(provider_symbol, "BRK-B")
 
     def test_records_ordered_universe_observations(self) -> None:
         market_data = pl.DataFrame(

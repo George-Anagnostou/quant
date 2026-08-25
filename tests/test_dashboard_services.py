@@ -54,6 +54,10 @@ class DashboardServiceTests(unittest.TestCase):
                 [f"SYM{index}" for index in range(MAX_QUOTE_SYMBOLS + 1)]
             )
 
+    def test_rejects_blank_single_quote(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Symbol is required"):
+            DashboardService().quote("   ")
+
     def test_serves_eod_quotes_from_shared_market_history(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "quant.db"

@@ -11,13 +11,13 @@ import polars as pl
 from quant.database import (
     DEFAULT_DATABASE_PATH,
     LOCAL_ADMIN_USER_ID,
+    MAX_WATCHLIST_SYMBOLS,
     database_connection,
     initialize_database,
 )
 
 DEFAULT_USER_DATA_PATH = DEFAULT_DATABASE_PATH
 DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "GOOGL", "TSLA"]
-MAX_WATCHLIST_SYMBOLS = 20
 
 
 class UserDataRepository:
@@ -167,6 +167,7 @@ class UserDataRepository:
         if not symbol:
             raise ValueError("Symbol is required")
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 """
                 SELECT 1 FROM watchlist WHERE user_id = ? AND symbol = ?
@@ -199,13 +200,16 @@ class UserDataRepository:
                 """,
                 (self.user_id,),
             ).fetchone()[0]
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO watchlist(user_id, symbol, sort_order)
-                VALUES (?, ?, ?)
-                """,
-                (self.user_id, symbol, next_order),
-            )
+            try:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO watchlist(user_id, symbol, sort_order)
+                    VALUES (?, ?, ?)
+                    """,
+                    (self.user_id, symbol, next_order),
+                )
+            except sqlite3.IntegrityError as error:
+                raise ValueError(str(error)) from error
         return self.list_watchlist()
 
     def remove_watchlist(self, symbol: str) -> list[str]:

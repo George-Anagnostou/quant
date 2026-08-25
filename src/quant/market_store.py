@@ -248,6 +248,9 @@ class MarketDataRepository:
                 "SELECT id FROM securities WHERE symbol = ?", (symbol,)
             ).fetchone()["id"]
             if provider is not None:
+                provider_symbol = (
+                    symbol.replace(".", "-") if provider == "yahoo" else symbol
+                )
                 connection.execute(
                     """
                     INSERT INTO provider_symbols(
@@ -257,7 +260,7 @@ class MarketDataRepository:
                         security_id = excluded.security_id,
                         active = 1
                     """,
-                    (provider, symbol, security_id),
+                    (provider, provider_symbol, security_id),
                 )
             security_ids[row["Symbol"]] = security_id
         return security_ids

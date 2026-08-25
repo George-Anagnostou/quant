@@ -88,7 +88,10 @@ class DashboardService:
         return {"quotes": quotes}
 
     def quote(self, symbol: str, refresh: bool = False) -> dict:
-        quote = self.quotes([symbol], refresh)["quotes"][0]
+        quotes = self.quotes([symbol], refresh)["quotes"]
+        if not quotes:
+            raise ValueError("Symbol is required")
+        quote = quotes[0]
         if quote.get("error"):
             raise ValueError(f"Market data unavailable for {symbol.upper()}")
         return quote

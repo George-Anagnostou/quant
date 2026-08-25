@@ -9,7 +9,8 @@ from pathlib import Path
 
 DEFAULT_DATABASE_PATH = Path("data/quant.db")
 LOCAL_ADMIN_USER_ID = "local-admin"
-SCHEMA_VERSION = 2
+MAX_WATCHLIST_SYMBOLS = 20
+SCHEMA_VERSION = 3
 _INITIALIZATION_LOCK = threading.Lock()
 
 
@@ -18,17 +19,30 @@ def initialize_database(path: Path = DEFAULT_DATABASE_PATH) -> None:
     with _INITIALIZATION_LOCK:
         with _open_connection(path) as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version >= SCHEMA_VERSION:
+            if version > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"Database schema {version} is newer than supported "
+                    f"version {SCHEMA_VERSION}"
+                )
+            if version == SCHEMA_VERSION:
                 return
             # Another process may migrate while this connection waits for the lock.
             connection.execute("BEGIN IMMEDIATE")
             version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if version > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"Database schema {version} is newer than supported "
+                    f"version {SCHEMA_VERSION}"
+                )
             if version < 1:
                 _migrate_user_data(connection)
                 connection.execute("PRAGMA user_version = 1")
             if version < 2:
                 _migrate_market_data(connection)
                 connection.execute("PRAGMA user_version = 2")
+            if version < 3:
+                _migrate_watchlist_limit(connection)
+                connection.execute("PRAGMA user_version = 3")
 
 
 @contextmanager
@@ -307,6 +321,21 @@ def _migrate_market_data(connection: sqlite3.Connection) -> None:
     ]
     for statement in statements:
         connection.execute(statement)
+
+
+def _migrate_watchlist_limit(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS watchlist_size_limit
+        BEFORE INSERT ON watchlist
+        WHEN (
+            SELECT COUNT(*) FROM watchlist WHERE user_id = NEW.user_id
+        ) >= {MAX_WATCHLIST_SYMBOLS}
+        BEGIN
+            SELECT RAISE(ABORT, 'watchlist cannot exceed {MAX_WATCHLIST_SYMBOLS} symbols');
+        END
+        """
+    )
     connection.execute(
         """
         CREATE INDEX IF NOT EXISTS watchlist_user_order_idx

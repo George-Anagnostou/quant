@@ -7,7 +7,11 @@ import polars as pl
 from quant.analysis import summarize_portfolio
 from quant.database import DEFAULT_DATABASE_PATH
 from quant.market_analysis import analyze_symbols, get_index_symbols
-from quant.market_data import get_sp500_market_history, latest_market_snapshot
+from quant.market_data import (
+    get_sp500_constituents,
+    get_sp500_market_history,
+    latest_market_snapshot,
+)
 from quant.market_store import MarketDataRepository
 from quant.portfolio import analyze_positions
 from quant.user_data import UserDataRepository
@@ -96,8 +100,10 @@ def _run_index(args: argparse.Namespace) -> None:
     repository = MarketDataRepository(args.database)
     symbols = repository.list_universe_symbols("sp500")
     if args.refresh or not symbols:
-        history = get_sp500_market_history()
-        repository.save(history, universe="sp500")
+        constituents = get_sp500_constituents()
+        history = get_sp500_market_history(constituents)
+        repository.save_universe("sp500", constituents)
+        repository.save(history)
         print(f"Downloaded and stored {history.height:,} rows in {args.database}")
     else:
         history = repository.load(symbols)

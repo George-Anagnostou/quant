@@ -73,8 +73,17 @@ class UserDataRepositoryTests(unittest.TestCase):
             with database_connection(path) as connection:
                 self.assertEqual(
                     connection.execute("PRAGMA user_version").fetchone()[0],
-                    2,
+                    3,
                 )
+
+    def test_rejects_newer_database_schema(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "quant.db"
+            with sqlite3.connect(path) as connection:
+                connection.execute("PRAGMA user_version = 99")
+
+            with self.assertRaisesRegex(RuntimeError, "newer than supported"):
+                initialize_database(path)
 
     def test_scopes_user_data(self) -> None:
         with TemporaryDirectory() as directory:
@@ -138,6 +147,25 @@ class UserDataRepositoryTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "cannot exceed"):
                 repository.add_watchlist("OVERFLOW")
+
+    def test_serializes_concurrent_watchlist_additions_at_limit(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "quant.db"
+            repository = UserDataRepository(path)
+            repository.initialize()
+
+            def add(index: int) -> None:
+                try:
+                    UserDataRepository(path).add_watchlist(f"SYM{index}")
+                except ValueError:
+                    pass
+
+            with ThreadPoolExecutor(max_workers=12) as executor:
+                futures = [executor.submit(add, index) for index in range(30)]
+                for future in futures:
+                    future.result()
+
+            self.assertEqual(len(repository.list_watchlist()), MAX_WATCHLIST_SYMBOLS)
 
     def test_exposes_positions_as_the_shared_polars_shape(self) -> None:
         with TemporaryDirectory() as directory:
