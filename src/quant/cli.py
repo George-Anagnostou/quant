@@ -29,7 +29,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="quant",
-        description="Cache-first portfolio and market analysis",
+        description="SQLite-backed portfolio and market analysis",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -53,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
     market.add_argument(
         "--index",
         action="store_true",
-        help="analyze every symbol in the cached S&P 500",
+        help="analyze every symbol in the stored S&P 500 universe",
     )
     market.add_argument(
         "--windows",
@@ -79,7 +79,7 @@ def _add_refresh(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--refresh",
         action="store_true",
-        help="replace cached values with fresh Yahoo data",
+        help="replace stored observations with fresh Yahoo data",
     )
 
 

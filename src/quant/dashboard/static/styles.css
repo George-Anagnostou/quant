@@ -111,7 +111,6 @@ h2 {
 .row.between {
   justify-content: space-between;
 }
-.spacer { flex: 1; }
 
 table {
   border-collapse: collapse;
@@ -211,34 +210,12 @@ a:hover { text-decoration: underline; }
   font-weight: 600;
 }
 
-.kv {
-  display: flex;
-  justify-content: space-between;
-  font-size: 14px;
-  padding: 2px 0;
-}
-.kv .k { color: var(--muted); }
-
 .chart-wrap {
   position: relative;
   height: 340px;
   width: 100%;
 }
 .chart-wrap canvas { width: 100% !important; }
-
-.pill {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 9999px;
-  font-size: 12px;
-  font-weight: 500;
-  background: #1a2030;
-  color: var(--text);
-}
-.pill.up { background: #0f2b1b; color: var(--up); }
-.pill.down { background: #2b0f0f; color: var(--down); }
-
-.scroll-y { max-height: 360px; overflow-y: auto; }
 
 .allocation-row + .allocation-row { margin-top: 10px; }
 .allocation-track {

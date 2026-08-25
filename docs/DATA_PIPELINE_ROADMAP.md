@@ -220,6 +220,10 @@ commands own schema migration, synchronization, backup, and user administration.
 
 ## Delivery Roadmap
 
+Phases 1 and 2 are implemented on the SQLite data-foundation branch. Missing
+history still uses a temporary request-time download bridge; Phase 3 replaces
+that bridge with explicit synchronization and validation.
+
 ### Phase 1: SQLite Foundation
 
 1. Introduce shared SQLite connections and schema migrations.
