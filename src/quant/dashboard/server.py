@@ -144,6 +144,136 @@ def technical_analysis(
         raise HTTPException(status_code=502, detail=str(error)) from error
 
 
+@app.get("/api/search")
+def security_search(
+    query: str,
+    limit: int = 10,
+    remote: bool = False,
+) -> dict:
+    return _service_response(
+        lambda: _dashboard_service.security_search(query, limit, remote)
+    )
+
+
+@app.get("/api/risk")
+def symbol_risk(
+    symbols: str = Query(..., description="Comma-separated symbols"),
+    period: str = "1y",
+    benchmark: str = "SPY",
+    refresh: bool = False,
+) -> dict:
+    parsed = [symbol.strip() for symbol in symbols.split(",") if symbol.strip()]
+    return _service_response(
+        lambda: _dashboard_service.symbol_risk(
+            parsed, period, benchmark, refresh
+        )
+    )
+
+
+@app.get("/api/portfolio/risk")
+def portfolio_risk(
+    period: str = "1y",
+    benchmark: str = "SPY",
+    refresh: bool = False,
+) -> dict:
+    return _service_response(
+        lambda: _dashboard_service.portfolio_risk(period, benchmark, refresh)
+    )
+
+
+@app.get("/api/screener")
+def screener(
+    symbols: str | None = None,
+    period: str = "1y",
+    benchmark: str = "SPY",
+    refresh: bool = False,
+) -> dict:
+    parsed = (
+        [symbol.strip() for symbol in symbols.split(",") if symbol.strip()]
+        if symbols is not None
+        else None
+    )
+    return _service_response(
+        lambda: _dashboard_service.screener(
+            parsed, period, benchmark, refresh
+        )
+    )
+
+
+@app.get("/api/research/{symbol}/profile")
+def research_profile(symbol: str) -> dict:
+    return _service_response(lambda: _dashboard_service.research_profile(symbol))
+
+
+@app.get("/api/research/{symbol}/analyst")
+def research_analyst(symbol: str) -> dict:
+    return _service_response(lambda: _dashboard_service.research_analyst(symbol))
+
+
+@app.get("/api/research/{symbol}/earnings")
+def research_earnings(symbol: str, limit: int = 12) -> dict:
+    return _service_response(
+        lambda: _dashboard_service.research_earnings(symbol, limit)
+    )
+
+
+@app.get("/api/research/{symbol}/options")
+def research_options(
+    symbol: str,
+    expiration: str | None = None,
+    limit: int = 1_000,
+) -> dict:
+    return _service_response(
+        lambda: _dashboard_service.research_options(
+            symbol, expiration, limit
+        )
+    )
+
+
+@app.get("/api/research/{symbol}/news")
+def research_news(symbol: str, limit: int = 20) -> list[dict]:
+    return _service_response(
+        lambda: _dashboard_service.research_news(symbol, limit)
+    )
+
+
+@app.get("/api/research/{symbol}/history")
+def research_history(
+    symbol: str,
+    period: str = "1y",
+    interval: str = "1d",
+    limit: int = 500,
+) -> list[dict]:
+    return _service_response(
+        lambda: _dashboard_service.research_history(
+            symbol, period, interval, limit
+        )
+    )
+
+
+@app.get("/api/research/{symbol}/intraday")
+def research_intraday(
+    symbol: str,
+    period: str = "5d",
+    interval: str = "5m",
+    limit: int = 500,
+) -> list[dict]:
+    return _service_response(
+        lambda: _dashboard_service.research_intraday(
+            symbol, period, interval, limit
+        )
+    )
+
+
+def _service_response(operation):
+    try:
+        return _clean_json(operation())
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+
 def _clean_json(value: Any) -> Any:
     if value is None:
         return None

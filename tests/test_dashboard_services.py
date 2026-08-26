@@ -2,7 +2,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import polars as pl
 
@@ -148,6 +148,92 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertEqual(result["symbol"], "AAPL")
         self.assertEqual(result["rows"][0]["price"], 124.0)
         self.assertEqual(result["rows"][0]["movingAverages"]["20"], 120.0)
+
+    def test_searches_local_securities_and_only_uses_remote_when_requested(
+        self,
+    ) -> None:
+        research = Mock()
+        research.search.return_value = [{"symbol": "AAPL", "exchange": "NMS"}]
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "quant.db"
+            market_repository = MarketDataRepository(path)
+            market_repository.save(
+                pl.DataFrame(
+                    {
+                        "Date": [date(2026, 8, 21)],
+                        "Symbol": ["AAPL"],
+                        "Company": ["Apple Inc."],
+                        "Close": [225.0],
+                    }
+                )
+            )
+            service = DashboardService(
+                UserDataRepository(path), market_repository, research
+            )
+
+            local = service.security_search("apple")
+            combined = service.security_search("apple", 5, remote=True)
+
+        self.assertEqual(local["local"][0]["symbol"], "AAPL")
+        self.assertEqual(local["remote"], [])
+        self.assertEqual(combined["remote"][0]["exchange"], "NMS")
+        research.search.assert_called_once_with("apple", 5)
+
+    @patch("quant.dashboard.services.analyze_symbol_risk")
+    def test_serializes_symbol_risk_analysis(self, analyze_symbol_risk) -> None:
+        analyze_symbol_risk.return_value = {
+            "metrics": pl.DataFrame(
+                {
+                    "Symbol": ["AAPL"],
+                    "Latest Date": [date(2026, 8, 21)],
+                    "Sharpe Ratio": [1.25],
+                }
+            ),
+            "correlations": pl.DataFrame(
+                {
+                    "Symbol": ["AAPL"],
+                    "Other Symbol": ["AAPL"],
+                    "Correlation": [1.0],
+                }
+            ),
+        }
+
+        result = DashboardService().symbol_risk(["aapl"], "1y", "spy")
+
+        self.assertEqual(result["metrics"][0]["latestDate"], "2026-08-21")
+        self.assertEqual(result["metrics"][0]["sharpeRatio"], 1.25)
+        self.assertEqual(result["correlations"][0]["otherSymbol"], "AAPL")
+
+    @patch("quant.dashboard.services.screen_symbols_eod")
+    def test_screener_defaults_to_watchlist_and_holdings(
+        self, screen_symbols_eod
+    ) -> None:
+        screen_symbols_eod.return_value = pl.DataFrame(
+            {"Symbol": ["AAPL"], "Composite Score": [75.0]}
+        )
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "quant.db"
+            repository = UserDataRepository(path)
+            repository.add_watchlist("AAPL")
+            repository.add_position("MSFT", 1, 100)
+            service = DashboardService(repository)
+
+            result = service.screener()
+
+        self.assertEqual(result["rows"][0]["compositeScore"], 75.0)
+        self.assertEqual(
+            screen_symbols_eod.call_args.args[0], ["AAPL", "MSFT"]
+        )
+
+    def test_research_methods_delegate_to_cached_provider_service(self) -> None:
+        research = Mock()
+        research.profile.return_value = {"longName": "Apple Inc."}
+        service = DashboardService(research_service=research)
+
+        self.assertEqual(
+            service.research_profile("aapl"), {"longName": "Apple Inc."}
+        )
+        research.profile.assert_called_once_with("aapl")
 
 
 if __name__ == "__main__":

@@ -1,17 +1,26 @@
 from __future__ import annotations
 
+import re
+from datetime import date, datetime
+
 import polars as pl
 
 from quant.analysis import summarize_allocation, summarize_portfolio
-from quant.market_analysis import analyze_symbols
+from quant.market_analysis import (
+    analyze_symbol_risk,
+    analyze_symbols,
+    screen_symbols_eod,
+)
 from quant.market_data import latest_market_snapshot
 from quant.market_store import MarketDataRepository
-from quant.portfolio import analyze_positions
+from quant.portfolio import analyze_portfolio_risk, analyze_positions
 from quant.quotes import resolve_market_history
+from quant.research import CachedResearchService, YahooResearchProvider
 from quant.user_data import UserDataRepository
 
 
 MAX_QUOTE_SYMBOLS = 20
+MAX_SCREENER_SYMBOLS = 100
 
 
 class DashboardService:
@@ -19,10 +28,14 @@ class DashboardService:
         self,
         repository: UserDataRepository | None = None,
         market_repository: MarketDataRepository | None = None,
+        research_service: CachedResearchService | None = None,
     ) -> None:
         self.repository = repository or UserDataRepository()
         self.market_repository = market_repository or MarketDataRepository(
             self.repository.path
+        )
+        self.research_service = research_service or CachedResearchService(
+            YahooResearchProvider()
         )
 
     def watchlist(self) -> list[str]:
@@ -222,6 +235,155 @@ class DashboardService:
             "rows": rows,
         }
 
+    def security_search(
+        self,
+        query: str,
+        limit: int = 10,
+        remote: bool = False,
+    ) -> dict:
+        local = self.market_repository.search_securities(query, limit)
+        result = {
+            "local": [
+                {
+                    "symbol": row["Symbol"],
+                    "name": row["Company"] or row["Symbol"],
+                }
+                for row in local.to_dicts()
+            ],
+            "remote": [],
+        }
+        if remote:
+            result["remote"] = self.research_service.search(query, limit)
+        return result
+
+    def symbol_risk(
+        self,
+        symbols: list[str],
+        period: str = "1y",
+        benchmark: str = "SPY",
+        refresh: bool = False,
+    ) -> dict:
+        result = analyze_symbol_risk(
+            symbols,
+            period,
+            benchmark,
+            self.market_repository,
+            refresh,
+        )
+        return {
+            "period": period.lower(),
+            "benchmark": benchmark.upper(),
+            "metrics": _frame_records(result["metrics"]),
+            "correlations": _frame_records(result["correlations"]),
+        }
+
+    def portfolio_risk(
+        self,
+        period: str = "1y",
+        benchmark: str = "SPY",
+        refresh: bool = False,
+    ) -> dict:
+        result = analyze_portfolio_risk(
+            self.repository.positions_frame(),
+            period,
+            benchmark,
+            self.market_repository,
+            refresh,
+        )
+        return {
+            "period": period.lower(),
+            "benchmark": benchmark.upper(),
+            "metrics": _frame_records(result["metrics"]),
+            "history": _frame_records(result["history"]),
+            "returnContributions": _frame_records(
+                result["return_contributions"]
+            ),
+            "riskContributions": _frame_records(
+                result["risk_contributions"]
+            ),
+            "correlations": _frame_records(result["correlations"]),
+            "unavailableSymbols": result["unavailable_symbols"],
+        }
+
+    def screener(
+        self,
+        symbols: list[str] | None = None,
+        period: str = "1y",
+        benchmark: str = "SPY",
+        refresh: bool = False,
+    ) -> dict:
+        if symbols is None:
+            positions = self.repository.positions_frame()
+            position_symbols = (
+                positions.get_column("Symbol").to_list()
+                if not positions.is_empty()
+                else []
+            )
+            symbols = [*self.repository.list_watchlist(), *position_symbols]
+        symbols = list(
+            dict.fromkeys(
+                symbol.strip().upper()
+                for symbol in symbols
+                if isinstance(symbol, str) and symbol.strip()
+            )
+        )
+        if not symbols:
+            raise ValueError("Screener requires at least one symbol")
+        if len(symbols) > MAX_SCREENER_SYMBOLS:
+            raise ValueError(
+                f"Screener accepts at most {MAX_SCREENER_SYMBOLS} symbols"
+            )
+        screen = screen_symbols_eod(
+            symbols,
+            period,
+            benchmark,
+            self.market_repository,
+            refresh,
+        )
+        return {
+            "period": period.lower(),
+            "benchmark": benchmark.upper(),
+            "rows": _frame_records(screen),
+        }
+
+    def research_profile(self, symbol: str) -> dict:
+        return self.research_service.profile(symbol)
+
+    def research_analyst(self, symbol: str) -> dict:
+        return self.research_service.analyst(symbol)
+
+    def research_earnings(self, symbol: str, limit: int = 12) -> dict:
+        return self.research_service.earnings(symbol, limit)
+
+    def research_options(
+        self,
+        symbol: str,
+        expiration: str | None = None,
+        limit: int = 1_000,
+    ) -> dict:
+        return self.research_service.options(symbol, expiration, limit)
+
+    def research_news(self, symbol: str, limit: int = 20) -> list[dict]:
+        return self.research_service.news(symbol, limit)
+
+    def research_history(
+        self,
+        symbol: str,
+        period: str = "1y",
+        interval: str = "1d",
+        limit: int = 500,
+    ) -> list[dict]:
+        return self.research_service.history(symbol, period, interval, limit)
+
+    def research_intraday(
+        self,
+        symbol: str,
+        period: str = "5d",
+        interval: str = "5m",
+        limit: int = 500,
+    ) -> list[dict]:
+        return self.research_service.intraday(symbol, period, interval, limit)
+
     @staticmethod
     def _holding_response(row: dict) -> dict:
         as_of = row["As Of"]
@@ -260,3 +422,26 @@ class DashboardService:
             }
             for row in allocation.to_dicts()
         ]
+
+
+def _frame_records(frame: pl.DataFrame) -> list[dict]:
+    return [
+        {
+            _response_key(key): _response_value(value)
+            for key, value in row.items()
+        }
+        for row in frame.to_dicts()
+    ]
+
+
+def _response_key(value: str) -> str:
+    parts = re.findall(r"[A-Za-z0-9]+", value)
+    if not parts:
+        return value
+    return parts[0].lower() + "".join(part.title() for part in parts[1:])
+
+
+def _response_value(value):
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    return value

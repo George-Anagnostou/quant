@@ -101,7 +101,7 @@ def analyze_symbol_risk(
     repository: MarketDataRepository | None = None,
     refresh: bool = False,
 ) -> dict[str, pl.DataFrame]:
-    asset_symbols, benchmark_symbol, history = _resolve_eod_history(
+    asset_symbols, benchmark_symbol, history = load_eod_analysis_history(
         symbols,
         period,
         benchmark_symbol,
@@ -151,7 +151,7 @@ def screen_symbols_eod(
     repository: MarketDataRepository | None = None,
     refresh: bool = False,
 ) -> pl.DataFrame:
-    asset_symbols, benchmark_symbol, history = _resolve_eod_history(
+    asset_symbols, benchmark_symbol, history = load_eod_analysis_history(
         symbols,
         period,
         benchmark_symbol,
@@ -167,7 +167,7 @@ def screen_symbols_eod(
     return score_eod_momentum_screen(history, benchmark_symbol)
 
 
-def _resolve_eod_history(
+def load_eod_analysis_history(
     symbols: Iterable[str],
     period: str,
     benchmark_symbol: str,
