@@ -129,6 +129,41 @@ class MarketDataStorageTests(unittest.TestCase):
             )
             self.assertEqual(repository.list_universe_symbols("sp500"), ["AAPL"])
 
+    def test_searches_local_securities_with_exact_and_prefix_priority(self) -> None:
+        market_data = pl.DataFrame(
+            {
+                "Date": [date(2026, 8, 21)] * 4,
+                "Symbol": ["MAPP", "AAPL", "ZZZ", "APP"],
+                "Company": [
+                    "Mapping Corp.",
+                    "Apple Inc.",
+                    "Pineapple Holdings",
+                    "App Corp.",
+                ],
+                "Close": [10.0, 20.0, 30.0, 40.0],
+            }
+        )
+
+        with TemporaryDirectory() as directory:
+            repository = MarketDataRepository(Path(directory) / "quant.db")
+            repository.save(market_data)
+
+            results = repository.search_securities(" aPp ")
+
+        self.assertEqual(
+            results.get_column("Symbol").to_list(),
+            ["APP", "AAPL", "MAPP", "ZZZ"],
+        )
+
+    def test_bounds_local_security_search(self) -> None:
+        with TemporaryDirectory() as directory:
+            repository = MarketDataRepository(Path(directory) / "quant.db")
+
+            with self.assertRaisesRegex(ValueError, "must not be blank"):
+                repository.search_securities("  ")
+            with self.assertRaisesRegex(ValueError, "between 1 and 50"):
+                repository.search_securities("app", 51)
+
     def test_concurrent_first_save_uses_the_persisted_security_id(self) -> None:
         market_data = pl.DataFrame(
             {

@@ -3,7 +3,15 @@ from datetime import datetime, timedelta
 
 import polars as pl
 
-from quant.analysis import analyze_market_history
+from quant.analysis import (
+    analyze_market_history,
+    calculate_benchmark_metrics,
+    calculate_daily_returns,
+    calculate_pairwise_correlations,
+    calculate_period_returns,
+    score_eod_momentum_screen,
+    summarize_risk_metrics,
+)
 from quant.market_data import EASTERN_TIME, get_sp500_constituents
 from quant.market_store import MarketDataRepository
 from quant.quotes import resolve_market_history
@@ -11,6 +19,23 @@ from quant.quotes import resolve_market_history
 
 MAX_ANALYSIS_WINDOWS = 10
 MAX_ANALYSIS_WINDOW = 2520
+PERIOD_TARGET_SESSIONS = {
+    "1mo": 21,
+    "3mo": 63,
+    "6mo": 126,
+    "1y": 252,
+    "2y": 504,
+    "5y": 1260,
+}
+PERIOD_CALENDAR_LOOKBACK_DAYS = {
+    "1mo": 45,
+    "3mo": 120,
+    "6mo": 240,
+    "1y": 400,
+    "2y": 800,
+    "5y": 2000,
+}
+EOD_HISTORY_COLUMNS = ["Date", "Symbol", "Adjusted Close"]
 
 
 def analyze_symbols(
@@ -67,3 +92,169 @@ def get_index_symbols(
     if symbols:
         return symbols
     return get_sp500_constituents().get_column("Symbol").to_list()
+
+
+def analyze_symbol_risk(
+    symbols: Iterable[str],
+    period: str = "1y",
+    benchmark_symbol: str = "SPY",
+    repository: MarketDataRepository | None = None,
+    refresh: bool = False,
+) -> dict[str, pl.DataFrame]:
+    asset_symbols, benchmark_symbol, history = _resolve_eod_history(
+        symbols,
+        period,
+        benchmark_symbol,
+        repository,
+        refresh,
+    )
+    accepted = _accepted_symbols(asset_symbols, history)
+    if not accepted:
+        raise RuntimeError("Market data unavailable for requested symbols")
+    if benchmark_symbol not in _accepted_symbols([benchmark_symbol], history):
+        raise RuntimeError(
+            f"Market data unavailable for benchmark: {benchmark_symbol}"
+        )
+
+    returns = calculate_daily_returns(history)
+    asset_returns = returns.filter(pl.col("Symbol").is_in(accepted))
+    benchmark_returns = returns.filter(
+        pl.col("Symbol") == benchmark_symbol
+    ).select("Date", "Return")
+    periods = calculate_period_returns(
+        history.filter(pl.col("Symbol").is_in(accepted))
+    )
+    risk = summarize_risk_metrics(asset_returns)
+    benchmark = calculate_benchmark_metrics(
+        asset_returns,
+        benchmark_returns,
+    ).rename({"Observations": "Benchmark Observations"})
+    metrics = (
+        pl.DataFrame({"Symbol": accepted})
+        .join(periods, on="Symbol", how="left", validate="1:1")
+        .join(risk, on="Symbol", how="left", validate="1:1")
+        .join(benchmark, on="Symbol", how="left", validate="1:1")
+        .sort("Symbol")
+    )
+    correlations = (
+        calculate_pairwise_correlations(asset_returns)
+        if len(accepted) > 1
+        else _empty_correlations()
+    )
+    return {"metrics": metrics, "correlations": correlations}
+
+
+def screen_symbols_eod(
+    symbols: Iterable[str],
+    period: str = "1y",
+    benchmark_symbol: str = "SPY",
+    repository: MarketDataRepository | None = None,
+    refresh: bool = False,
+) -> pl.DataFrame:
+    asset_symbols, benchmark_symbol, history = _resolve_eod_history(
+        symbols,
+        period,
+        benchmark_symbol,
+        repository,
+        refresh,
+    )
+    if not _accepted_symbols(asset_symbols, history):
+        raise RuntimeError("Market data unavailable for requested symbols")
+    if benchmark_symbol not in _accepted_symbols([benchmark_symbol], history):
+        raise RuntimeError(
+            f"Market data unavailable for benchmark: {benchmark_symbol}"
+        )
+    return score_eod_momentum_screen(history, benchmark_symbol)
+
+
+def _resolve_eod_history(
+    symbols: Iterable[str],
+    period: str,
+    benchmark_symbol: str,
+    repository: MarketDataRepository | None,
+    refresh: bool,
+) -> tuple[list[str], str, pl.DataFrame]:
+    asset_symbols = _normalize_symbols(symbols)
+    benchmark_symbol = _normalize_benchmark(benchmark_symbol)
+    asset_symbols = [
+        symbol for symbol in asset_symbols if symbol != benchmark_symbol
+    ]
+    if not asset_symbols:
+        raise ValueError("At least one non-benchmark symbol is required")
+    period = _normalize_period(period)
+    requested = [*asset_symbols, benchmark_symbol]
+    repository = repository or MarketDataRepository()
+    history = resolve_market_history(
+        requested,
+        repository,
+        EOD_HISTORY_COLUMNS,
+        minimum_sessions=PERIOD_TARGET_SESSIONS[period],
+        refresh=refresh,
+        start=(
+            datetime.now(EASTERN_TIME).date()
+            - timedelta(days=PERIOD_CALENDAR_LOOKBACK_DAYS[period])
+        ),
+        allow_missing=True,
+    )
+    history = history.drop_nulls(EOD_HISTORY_COLUMNS).filter(
+        pl.col("Symbol").is_in(requested)
+    )
+    return asset_symbols, benchmark_symbol, history
+
+
+def _normalize_symbols(symbols: Iterable[str]) -> list[str]:
+    if isinstance(symbols, str):
+        raise ValueError("Symbols must be an iterable of strings")
+    try:
+        values = list(symbols)
+    except TypeError as error:
+        raise ValueError("Symbols must be an iterable of strings") from error
+    if any(not isinstance(symbol, str) for symbol in values):
+        raise ValueError("Symbols must be an iterable of strings")
+    normalized = [
+        symbol.strip().upper() for symbol in values if symbol.strip()
+    ]
+    normalized = list(dict.fromkeys(normalized))
+    if not normalized:
+        raise ValueError("At least one symbol is required")
+    return normalized
+
+
+def _normalize_benchmark(benchmark_symbol: str) -> str:
+    if not isinstance(benchmark_symbol, str) or not benchmark_symbol.strip():
+        raise ValueError("Benchmark symbol must not be blank")
+    return benchmark_symbol.strip().upper()
+
+
+def _normalize_period(period: str) -> str:
+    if not isinstance(period, str):
+        raise ValueError("Period must be one of: 1mo, 3mo, 6mo, 1y, 2y, 5y")
+    normalized = period.strip().lower()
+    if normalized not in PERIOD_TARGET_SESSIONS:
+        raise ValueError("Period must be one of: 1mo, 3mo, 6mo, 1y, 2y, 5y")
+    return normalized
+
+
+def _accepted_symbols(
+    requested: list[str],
+    history: pl.DataFrame,
+) -> list[str]:
+    available = set(
+        history.group_by("Symbol")
+        .len()
+        .filter(pl.col("len") >= 2)
+        .get_column("Symbol")
+        .to_list()
+    )
+    return [symbol for symbol in requested if symbol in available]
+
+
+def _empty_correlations() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "Symbol": pl.String,
+            "Other Symbol": pl.String,
+            "Correlation": pl.Float64,
+            "Observations": pl.UInt32,
+        }
+    )

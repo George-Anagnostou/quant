@@ -193,6 +193,53 @@ class MarketDataRepository:
         )
         return frame.select(selected)
 
+    def search_securities(
+        self,
+        query: str,
+        limit: int = 10,
+    ) -> pl.DataFrame:
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("Security search query must not be blank")
+        if len(query.strip()) > 100:
+            raise ValueError("Security search query cannot exceed 100 characters")
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 50
+        ):
+            raise ValueError("Security search limit must be between 1 and 50")
+
+        self.initialize()
+        query = query.strip().lower()
+        with database_connection(self.path) as connection:
+            records = connection.execute(
+                """
+                SELECT symbol, company
+                FROM securities
+                WHERE instr(lower(symbol), ?) > 0
+                   OR instr(lower(COALESCE(company, '')), ?) > 0
+                ORDER BY
+                    CASE
+                        WHEN lower(symbol) = ? THEN 0
+                        WHEN instr(lower(symbol), ?) = 1
+                          OR instr(lower(COALESCE(company, '')), ?) = 1
+                        THEN 1
+                        ELSE 2
+                    END,
+                    symbol COLLATE NOCASE,
+                    symbol
+                LIMIT ?
+                """,
+                (query, query, query, query, query, limit),
+            ).fetchall()
+        return pl.DataFrame(
+            {
+                "Symbol": [row["symbol"] for row in records],
+                "Company": [row["company"] for row in records],
+            },
+            schema={"Symbol": pl.String, "Company": pl.String},
+        )
+
     def save_universe(
         self,
         universe: str,
