@@ -14,7 +14,18 @@
         <nav>
           <a href="#/">Watchlist</a>
           <a href="#/holdings">Holdings</a>
+          <a href="#/screener">Screener</a>
         </nav>
+        <form id="security-search" class="nav-search" role="search">
+          <label class="sr-only" for="security-search-input">Find a security</label>
+          <input
+            id="security-search-input"
+            type="search"
+            placeholder="Find symbol or company"
+            autocomplete="off"
+          />
+          <div id="security-search-results" class="search-results" hidden></div>
+        </form>
       </div>
       <div
         id="market-strip"

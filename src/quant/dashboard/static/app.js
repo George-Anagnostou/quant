@@ -30,6 +30,33 @@ const api = {
     }),
   holdingRemove: (id) =>
     request(`/api/holdings/${encodeURIComponent(id)}`, "DELETE"),
+  search: (query, limit = 8) =>
+    request(`/api/search?query=${encodeURIComponent(query)}&limit=${limit}`),
+  risk: (symbols, period = "1y", benchmark = "SPY") =>
+    request(
+      `/api/risk?symbols=${encodeURIComponent(symbols.join(","))}` +
+        `&period=${encodeURIComponent(period)}&benchmark=${encodeURIComponent(benchmark)}`
+    ),
+  portfolioRisk: (period = "1y", benchmark = "SPY") =>
+    request(
+      `/api/portfolio/risk?period=${encodeURIComponent(period)}` +
+        `&benchmark=${encodeURIComponent(benchmark)}`
+    ),
+  screener: (symbols, period = "1y", benchmark = "SPY") => {
+    const selected = symbols?.length
+      ? `&symbols=${encodeURIComponent(symbols.join(","))}`
+      : "";
+    return request(
+      `/api/screener?period=${encodeURIComponent(period)}` +
+        `&benchmark=${encodeURIComponent(benchmark)}${selected}`
+    );
+  },
+  research: (symbol, section, params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return request(
+      `/api/research/${encodeURIComponent(symbol)}/${section}${query ? `?${query}` : ""}`
+    );
+  },
 };
 
 async function request(path, method = "GET", body) {
@@ -96,6 +123,10 @@ function fmtPercent(value, signed = true) {
   return `${sign}${value.toFixed(2)}%`;
 }
 
+function fmtReturn(value, signed = true) {
+  return value == null ? "-" : fmtPercent(value * 100, signed);
+}
+
 function fmtNumber(value, digits = 2) {
   if (value == null || Number.isNaN(value)) return "-";
   return value.toLocaleString("en-US", { maximumFractionDigits: digits });
@@ -104,6 +135,13 @@ function fmtNumber(value, digits = 2) {
 function changeClass(value) {
   if (value == null || value === 0) return "muted";
   return value > 0 ? "up" : "down";
+}
+
+function scoreClass(value) {
+  if (value == null) return "";
+  if (value >= 67) return "high";
+  if (value < 34) return "low";
+  return "";
 }
 
 function errorPanel(message) {
@@ -312,6 +350,7 @@ async function renderStock(symbol, requestId) {
       `${symbol} stored daily close history is summarized in the table below.`
     );
     const chartWrap = element("div", { class: "chart-wrap" }, chartCanvas);
+    const riskSlot = element("div", {}, loadingPanel("Loading risk metrics..."));
     const chartButtons = element(
       "div",
       { class: "row", role: "group", "aria-label": "Chart date range" }
@@ -350,7 +389,9 @@ async function renderStock(symbol, requestId) {
         metric("Relative volume", formatMultiple(latest.relativeVolumes?.["20"]))
       ),
       element("div", { class: "panel stack" }, chartButtons, chartWrap),
-      renderTechnicalSnapshot(latest)
+      renderTechnicalSnapshot(latest),
+      riskSlot,
+      renderResearchPanel(symbol)
     );
 
     function drawChart(days) {
@@ -414,6 +455,7 @@ async function renderStock(symbol, requestId) {
       chartButtons.append(button);
     }
     drawChart(365);
+    drawStockRisk(riskSlot, symbol);
   } catch (error) {
     if (requestId !== navigationId) return;
     root.replaceChildren(errorPanel(`Technical analysis unavailable: ${error.message}`));
@@ -490,10 +532,204 @@ function renderTechnicalSnapshot(row) {
   );
 }
 
+async function drawStockRisk(slot, symbol, period = "1y") {
+  slot.replaceChildren(loadingPanel("Loading risk metrics..."));
+  try {
+    const data = await api.risk([symbol], period);
+    const row = data.metrics?.[0];
+    if (!row) throw new Error("No adjusted-close history is available.");
+    slot.replaceChildren(
+      element(
+        "section",
+        { class: "stack", "aria-labelledby": "risk-heading" },
+        element(
+          "div",
+          { class: "row between" },
+          element("h2", { id: "risk-heading" }, `Risk profile - ${period}`),
+          periodSelect(period, (value) => drawStockRisk(slot, symbol, value))
+        ),
+        element(
+          "div",
+          { class: "grid cols-4" },
+          metric("Cumulative return", fmtReturn(row.cumulativeReturn), changeClass(row.cumulativeReturn)),
+          metric("Annualized volatility", fmtReturn(row.annualizedVolatility, false)),
+          metric("Sharpe ratio", fmtNumber(row.sharpeRatio)),
+          metric("Maximum drawdown", fmtReturn(row.maxDrawdown), changeClass(row.maxDrawdown))
+        ),
+        element(
+          "div",
+          { class: "grid cols-4" },
+          metric("Beta vs SPY", fmtNumber(row.beta)),
+          metric("Annualized alpha", fmtReturn(row.annualizedAlpha), changeClass(row.annualizedAlpha)),
+          metric("1-month return", fmtReturn(row.oneMonthReturn), changeClass(row.oneMonthReturn)),
+          metric("12-1 momentum", fmtReturn(row.twelveOneMomentum), changeClass(row.twelveOneMomentum))
+        )
+      )
+    );
+  } catch (error) {
+    slot.replaceChildren(errorPanel(`Risk analysis unavailable: ${error.message}`));
+  }
+}
+
+function periodSelect(selected, onchange) {
+  return element(
+    "select",
+    {
+      "aria-label": "Analysis period",
+      onchange: (event) => onchange(event.target.value),
+    },
+    ...["1mo", "3mo", "6mo", "1y", "2y", "5y"].map((value) =>
+      element("option", { value, selected: value === selected ? "selected" : null }, value)
+    )
+  );
+}
+
+function renderResearchPanel(symbol) {
+  const content = element("div", {}, loadingPanel("Select a research section."));
+  const tabs = element(
+    "div",
+    { class: "tabs", role: "tablist", "aria-label": `${symbol} research` }
+  );
+  const sections = [
+    ["profile", "Profile", {}],
+    ["analyst", "Analyst", {}],
+    ["earnings", "Earnings", { limit: 12 }],
+    ["options", "Options", { limit: 50 }],
+    ["news", "News", { limit: 20 }],
+    ["intraday", "Intraday", { period: "5d", interval: "15m", limit: 250 }],
+  ];
+
+  async function load(section, params, button) {
+    for (const tab of tabs.querySelectorAll("button")) {
+      const active = tab === button;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", String(active));
+    }
+    content.replaceChildren(loadingPanel(`Loading ${section} research...`));
+    try {
+      const result = await api.research(symbol, section, params);
+      content.replaceChildren(renderResearchValue(result));
+    } catch (error) {
+      content.replaceChildren(errorPanel(`${section} research unavailable: ${error.message}`));
+    }
+  }
+
+  for (const [section, label, params] of sections) {
+    const button = element(
+      "button",
+      {
+        class: "ghost",
+        type: "button",
+        role: "tab",
+        "aria-selected": "false",
+        onclick: () => load(section, params, button),
+      },
+      label
+    );
+    tabs.append(button);
+  }
+  const first = tabs.querySelector("button");
+  queueMicrotask(() => first?.click());
+  return element(
+    "section",
+    { class: "panel stack", "aria-labelledby": "research-heading" },
+    element("h2", { id: "research-heading" }, "Company research"),
+    tabs,
+    content
+  );
+}
+
+function renderResearchValue(value) {
+  if (value == null || (Array.isArray(value) && !value.length)) {
+    return element("div", { class: "muted empty-state" }, "No data returned for this section.");
+  }
+  if (Array.isArray(value)) {
+    return renderRecordTable(value);
+  }
+  const primitives = [];
+  const groups = [];
+  for (const [key, item] of Object.entries(value)) {
+    if (item == null || ["string", "number", "boolean"].includes(typeof item)) {
+      primitives.push([key, item]);
+    } else {
+      groups.push([key, item]);
+    }
+  }
+  return element(
+    "div",
+    {},
+    primitives.length
+      ? element(
+          "dl",
+          { class: "key-values" },
+          ...primitives.map(([key, item]) =>
+            element(
+              "div",
+              { class: "key-value" },
+              element("dt", {}, humanize(key)),
+              element("dd", {}, item == null ? "-" : String(item))
+            )
+          )
+        )
+      : null,
+    ...groups.map(([key, item]) =>
+      element(
+        "details",
+        { class: "research-group" },
+        element("summary", {}, humanize(key)),
+        Array.isArray(item) ? renderRecordTable(item) : renderResearchValue(item)
+      )
+    )
+  );
+}
+
+function renderRecordTable(rows) {
+  if (!rows.length) return element("div", { class: "muted empty-state" }, "No records returned.");
+  if (!rows.every((row) => row && typeof row === "object" && !Array.isArray(row))) {
+    return element("pre", {}, JSON.stringify(rows, null, 2));
+  }
+  const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))].slice(0, 8);
+  return element(
+    "div",
+    { class: "table-panel" },
+    element(
+      "table",
+      {},
+      element("thead", {}, element("tr", {}, ...columns.map((key) => element("th", {}, humanize(key))))),
+      element(
+        "tbody",
+        {},
+        ...rows.map((row) =>
+          element(
+            "tr",
+            {},
+            ...columns.map((key) => {
+              const item = row[key];
+              return element(
+                "td",
+                {},
+                item != null && typeof item === "object" ? JSON.stringify(item) : item ?? "-"
+              );
+            })
+          )
+        )
+      )
+    )
+  );
+}
+
+function humanize(value) {
+  return String(value)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/^./, (letter) => letter.toUpperCase());
+}
+
 async function renderHoldings() {
   const root = element("div", { class: "stack" });
   const totals = element("div");
   const allocations = element("div");
+  const risk = element("div");
   const table = element("div", {}, loadingPanel());
   const formSlot = element("div");
   const refreshButton = element(
@@ -526,6 +762,7 @@ async function renderHoldings() {
       refreshButton
     ),
     totals,
+    risk,
     allocations,
     formSlot,
     table
@@ -533,6 +770,79 @@ async function renderHoldings() {
   app.replaceChildren(root);
   renderHoldingForm(formSlot, async () => drawHoldings(totals, allocations, table));
   await drawHoldings(totals, allocations, table);
+  await drawPortfolioRisk(risk);
+}
+
+async function drawPortfolioRisk(slot, period = "1y") {
+  slot.replaceChildren(loadingPanel("Loading portfolio risk..."));
+  try {
+    const data = await api.portfolioRisk(period);
+    const row = data.metrics?.[0];
+    if (!row) throw new Error("No portfolio history is available.");
+    const contributions = data.returnContributions || [];
+    slot.replaceChildren(
+      element(
+        "section",
+        { class: "stack", "aria-labelledby": "portfolio-risk-heading" },
+        element(
+          "div",
+          { class: "row between" },
+          element("h2", { id: "portfolio-risk-heading" }, `Portfolio risk - ${period}`),
+          periodSelect(period, (value) => drawPortfolioRisk(slot, value))
+        ),
+        element(
+          "div",
+          { class: "grid cols-4" },
+          metric("Cumulative return", fmtReturn(row.cumulativeReturn), changeClass(row.cumulativeReturn)),
+          metric("Annualized volatility", fmtReturn(row.annualizedVolatility, false)),
+          metric("Sharpe ratio", fmtNumber(row.sharpeRatio)),
+          metric("Maximum drawdown", fmtReturn(row.maxDrawdown), changeClass(row.maxDrawdown))
+        ),
+        element(
+          "div",
+          { class: "panel table-panel" },
+          element("h2", { class: "section-heading" }, "Endpoint return attribution"),
+          element(
+            "table",
+            {},
+            element(
+              "thead",
+              {},
+              element(
+                "tr",
+                {},
+                ...["Symbol", "Start value", "End value", "Contribution"].map((label) =>
+                  element("th", {}, label)
+                )
+              )
+            ),
+            element(
+              "tbody",
+              {},
+              ...contributions.map((item) =>
+                element(
+                  "tr",
+                  {},
+                  element("td", {}, item.symbol),
+                  element("td", {}, fmtMoney(item.startValue)),
+                  element("td", {}, fmtMoney(item.endValue)),
+                  element("td", { class: changeClass(item.returnContribution) }, fmtReturn(item.returnContribution))
+                )
+              )
+            )
+          )
+        )
+      )
+    );
+  } catch (error) {
+    slot.replaceChildren(
+      element(
+        "div",
+        { class: "warning", role: "status" },
+        `Portfolio risk unavailable: ${error.message}`
+      )
+    );
+  }
 }
 
 function renderHoldingForm(slot, onSaved) {
@@ -763,6 +1073,178 @@ function allocationPanel(title, rows) {
   );
 }
 
+async function renderScreener() {
+  const root = element("div", { class: "stack" });
+  const content = element("div", {}, loadingPanel("Scoring stored EOD history..."));
+  const symbols = element("input", {
+    placeholder: "Optional: AAPL, MSFT, NVDA",
+    "aria-label": "Screener symbols",
+  });
+  const period = periodSelect("1y", () => {});
+  const submit = element("button", { type: "submit" }, "Run screen");
+  const form = element(
+    "form",
+    {
+      class: "row",
+      onsubmit: async (event) => {
+        event.preventDefault();
+        submit.disabled = true;
+        await drawScreener(
+          content,
+          symbols.value.split(",").map((value) => value.trim()).filter(Boolean),
+          period.value
+        );
+        submit.disabled = false;
+      },
+    },
+    field("Symbols", symbols),
+    field("History", period),
+    element("div", { class: "form-action" }, submit)
+  );
+  root.append(
+    element(
+      "div",
+      { class: "page-heading" },
+      element("h1", {}, "EOD momentum screener"),
+      element(
+        "div",
+        { class: "muted small" },
+        "Ranks watchlist and holdings by momentum, return, risk, trend, and data coverage."
+      )
+    ),
+    element("div", { class: "panel" }, form),
+    content
+  );
+  app.replaceChildren(root);
+  await drawScreener(content, [], "1y");
+}
+
+async function drawScreener(content, symbols, period) {
+  content.replaceChildren(loadingPanel("Scoring stored EOD history..."));
+  try {
+    const data = await api.screener(symbols, period);
+    const body = element("tbody");
+    for (const row of data.rows || []) {
+      body.append(
+        element(
+          "tr",
+          {},
+          element("td", {}, element("a", { href: `#/stock/${row.symbol}` }, row.symbol)),
+          element("td", {}, fmtMoney(row.latestPrice)),
+          element("td", { class: changeClass(row.oneMonthReturn) }, fmtReturn(row.oneMonthReturn)),
+          element("td", { class: changeClass(row.ytdReturn) }, fmtReturn(row.ytdReturn)),
+          element("td", {}, element("span", { class: `score ${scoreClass(row.momentumScore)}` }, fmtNumber(row.momentumScore, 1))),
+          element("td", {}, element("span", { class: `score ${scoreClass(row.returnScore)}` }, fmtNumber(row.returnScore, 1))),
+          element("td", {}, element("span", { class: `score ${scoreClass(row.riskScore)}` }, fmtNumber(row.riskScore, 1))),
+          element("td", {}, element("span", { class: `score ${scoreClass(row.trendScore)}` }, fmtNumber(row.trendScore, 1))),
+          element("td", {}, element("span", { class: `score ${scoreClass(row.compositeScore)}` }, fmtNumber(row.compositeScore, 1))),
+          element(
+            "td",
+            {},
+            element(
+              "div",
+              { class: "signal-list" },
+              ...(row.signals || []).map((signal) => element("span", { class: "signal" }, signal))
+            )
+          )
+        )
+      );
+    }
+    if (!body.childNodes.length) {
+      body.append(
+        element("tr", {}, element("td", { colspan: 10, class: "empty-cell muted" }, "No symbols could be scored."))
+      );
+    }
+    content.replaceChildren(
+      element(
+        "div",
+        { class: "panel table-panel" },
+        element(
+          "table",
+          {},
+          element(
+            "thead",
+            {},
+            element(
+              "tr",
+              {},
+              ...["Symbol", "Close", "1 month", "YTD", "Momentum", "Return", "Risk", "Trend", "Composite", "Signals"].map(
+                (label) => element("th", {}, label)
+              )
+            )
+          ),
+          body
+        )
+      )
+    );
+  } catch (error) {
+    content.replaceChildren(errorPanel(`Screener unavailable: ${error.message}`));
+  }
+}
+
+function initializeSecuritySearch() {
+  const form = document.getElementById("security-search");
+  const input = document.getElementById("security-search-input");
+  const results = document.getElementById("security-search-results");
+  if (!form || !input || !results) return;
+  let timer = null;
+  let searchId = 0;
+
+  function hide() {
+    results.hidden = true;
+    results.replaceChildren();
+  }
+
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    const query = input.value.trim();
+    if (query.length < 2) return hide();
+    const current = ++searchId;
+    timer = setTimeout(async () => {
+      try {
+        const data = await api.search(query);
+        if (current !== searchId) return;
+        const rows = data.local || [];
+        results.replaceChildren(
+          ...(rows.length
+            ? rows.map((row) =>
+                element(
+                  "a",
+                  {
+                    class: "search-result",
+                    href: `#/stock/${encodeURIComponent(row.symbol)}`,
+                    onclick: hide,
+                  },
+                  element("span", { class: "search-symbol" }, row.symbol),
+                  element("span", { class: "search-name" }, row.name)
+                )
+              )
+            : [element("div", { class: "muted small", style: { padding: "9px 10px" } }, "No local matches")])
+        );
+        results.hidden = false;
+      } catch (error) {
+        if (current !== searchId) return;
+        results.replaceChildren(errorPanel(`Search unavailable: ${error.message}`));
+        results.hidden = false;
+      }
+    }, 180);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hide();
+  });
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const symbol = input.value.trim().toUpperCase();
+    if (!symbol) return;
+    hide();
+    input.value = "";
+    location.hash = `#/stock/${encodeURIComponent(symbol)}`;
+  });
+  document.addEventListener("click", (event) => {
+    if (!form.contains(event.target)) hide();
+  });
+}
+
 const MARKET_INDICES = [
   { symbol: "^GSPC", label: "S&P 500" },
   { symbol: "^IXIC", label: "NASDAQ" },
@@ -834,6 +1316,10 @@ function router() {
     document.title = "Holdings - Quant";
     return renderHoldings();
   }
+  if (hash === "/screener") {
+    document.title = "Screener - Quant";
+    return renderScreener();
+  }
   const stock = hash.match(/^\/stock\/(.+)$/);
   if (stock) {
     const symbol = decodeURIComponent(stock[1]).toUpperCase();
@@ -847,5 +1333,6 @@ function router() {
 }
 
 window.addEventListener("hashchange", router);
+initializeSecuritySearch();
 router();
 renderMarketStrip();
