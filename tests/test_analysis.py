@@ -164,7 +164,7 @@ class ReturnAnalyticsTests(unittest.TestCase):
             {
                 "Date": [
                     date(2024, 12, 1),
-                    date(2025, 8, 1),
+                    date(2025, 3, 1),
                     date(2025, 12, 31),
                     date(2026, 1, 1),
                     date(2026, 1, 20),
@@ -193,6 +193,20 @@ class ReturnAnalyticsTests(unittest.TestCase):
 
         result = calculate_period_returns(history).row(0, named=True)
 
+        self.assertIsNone(result["Twelve-One Momentum"])
+
+    def test_period_returns_report_missing_horizons_for_short_history(self) -> None:
+        history = pl.DataFrame(
+            {
+                "Date": [date(2026, 2, 10), date(2026, 2, 15)],
+                "Symbol": ["AAA", "AAA"],
+                "Adjusted Close": [100.0, 110.0],
+            }
+        )
+
+        result = calculate_period_returns(history).row(0, named=True)
+
+        self.assertIsNone(result["One Month Return"])
         self.assertIsNone(result["Twelve-One Momentum"])
 
     def test_calculates_simple_returns_per_symbol_in_date_order(self) -> None:
@@ -417,7 +431,7 @@ class MomentumScreenTests(unittest.TestCase):
         )
 
     def test_scores_symbols_deterministically_and_excludes_benchmark(self) -> None:
-        history = self._history(220)
+        history = self._history(370)
 
         first = score_eod_momentum_screen(history)
         second = score_eod_momentum_screen(history)

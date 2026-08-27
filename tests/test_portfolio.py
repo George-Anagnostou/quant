@@ -185,6 +185,26 @@ class PortfolioInputTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "BBB"):
             analyze_portfolio_risk(positions)
 
+    @patch("quant.portfolio.load_eod_analysis_history")
+    def test_requires_two_benchmark_observations(
+        self, load_eod_analysis_history
+    ) -> None:
+        positions = pl.DataFrame({"Symbol": ["AAA"], "Quantity": [1.0]})
+        load_eod_analysis_history.return_value = (
+            ["AAA"],
+            "SPY",
+            pl.DataFrame(
+                {
+                    "Date": [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 2)],
+                    "Symbol": ["AAA", "AAA", "SPY"],
+                    "Adjusted Close": [10.0, 11.0, 100.0],
+                }
+            ),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "benchmark: SPY"):
+            analyze_portfolio_risk(positions)
+
 
 if __name__ == "__main__":
     unittest.main()

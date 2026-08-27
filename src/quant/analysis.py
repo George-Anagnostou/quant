@@ -241,6 +241,13 @@ def calculate_period_returns(
         )
         .first()
         .alias("_One Month Start Price"),
+        pl.col("Date")
+        .filter(
+            pl.col("Date")
+            >= pl.col("Date").max() - pl.duration(days=30)
+        )
+        .first()
+        .alias("_One Month Start Date"),
         pl.col(price_column)
         .filter(
             pl.col("Date").dt.year()
@@ -279,17 +286,29 @@ def calculate_period_returns(
     )
     return (
         period_values.with_columns(
-            (
+            pl.when(
+                pl.col("_One Month Start Date")
+                <= pl.col("Latest Date") - pl.duration(days=25)
+            )
+            .then(
                 pl.col("_Latest Price")
                 / pl.col("_One Month Start Price")
                 - 1.0
-            ).alias("One Month Return"),
+            )
+            .otherwise(None)
+            .alias("One Month Return"),
             (
                 pl.col("_Latest Price") / pl.col("_YTD Start Price") - 1.0
             ).alias("YTD Return"),
             pl.when(
-                pl.col("_Twelve-One End Date")
-                > pl.col("_Twelve-One Start Date")
+                (
+                    pl.col("_Twelve-One End Date")
+                    > pl.col("_Twelve-One Start Date")
+                )
+                & (
+                    pl.col("_Twelve-One Start Date")
+                    <= pl.col("Latest Date") - pl.duration(days=330)
+                )
             )
             .then(
                 pl.col("_Twelve-One End Price")

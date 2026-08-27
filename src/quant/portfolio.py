@@ -66,7 +66,13 @@ def analyze_portfolio_risk(
         repository,
         refresh,
     )
-    available = set(history.get_column("Symbol").unique().to_list())
+    available = set(
+        history.group_by("Symbol")
+        .len()
+        .filter(pl.col("len") >= 2)
+        .get_column("Symbol")
+        .to_list()
+    )
     unavailable = [symbol for symbol in requested if symbol not in available]
     if unavailable:
         raise RuntimeError(
