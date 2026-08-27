@@ -15,10 +15,11 @@
 - The `quant` console script resolves to `main()` in `src/quant/cli.py`; `src/quant/__init__.py` has no CLI logic.
 - `src/quant/market_data.py` owns constituent discovery, Yahoo batching, symbol normalization (`BRK.B` -> `BRK-B`), and conversion to Polars.
 - `src/quant/database.py` owns SQLite connections and fresh-schema initialization. `src/quant/market_store.py` owns security, universe, and provider-separated daily-bar persistence and returns Polars frames.
-- `src/quant/analysis.py` contains pure Polars calculations; `src/quant/portfolio.py` owns stored-first portfolio quote resolution and shared position analysis.
+- `src/quant/analysis.py` contains pure Polars calculations, including return, risk, correlation, attribution, and EOD screener math. `src/quant/portfolio.py` owns stored-first portfolio quote resolution and shared current-position analysis.
 - `src/quant/quotes.py` is the shared stored-first resolver used by portfolio and market analysis. `src/quant/market_analysis.py` owns market-analysis orchestration, not indicator math.
 - `src/quant/dashboard/services.py` adapts shared Polars analysis for the API. `src/quant/user_data.py` owns user-scoped positions and watchlists; FastAPI routes must not read or write persistence directly.
-- `src/quant/dashboard/server.py` is a thin FastAPI/static adapter. Deferred fundamentals, analyst, earnings, options, news, and intraday research are intentionally absent.
+- `src/quant/research.py` is the injectable yfinance research boundary. Research responses use a bounded in-memory TTL cache with stale fallback and are never persisted.
+- `src/quant/dashboard/server.py` is a thin FastAPI/static adapter. Research and analytical routes delegate to `dashboard/services.py`; routes must not call yfinance, SQLite, or Polars calculations directly.
 - Keep project-facing data as `polars.DataFrame`. `yfinance` returns pandas internally, but pandas must remain confined to that dependency boundary; do not add pandas imports or direct pandas dependencies.
 - Unit tests must not call Wikipedia or Yahoo. Mock the `yfinance` boundary and use temporary paths for storage tests.
 

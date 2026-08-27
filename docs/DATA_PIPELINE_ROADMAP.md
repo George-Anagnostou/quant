@@ -36,8 +36,10 @@ Repository and analysis services
     Web UI   CLI / custom clients
 ```
 
-Data-provider requests must not occur unexpectedly while serving analytical API
-requests. Ingestion and analysis are separate operations.
+Durable data-provider requests should not occur unexpectedly while serving
+analytical API requests. The current missing-history request bridge is temporary.
+Explicit research endpoints may query their provider through the bounded
+in-memory cache, but do not persist those responses.
 
 ## Initial Decisions
 
@@ -47,8 +49,29 @@ requests. Ingestion and analysis are separate operations.
 - Backfill ten years of daily history for tracked equities.
 - Continue using yfinance behind a replaceable provider adapter.
 - Use one SQLite database at `data/quant.db` for application and market data.
-- Defer persistent intraday data, fundamentals, analyst ratings, options, and
-  news until the portfolio and technical core is reliable.
+- Keep intraday data, fundamentals, analyst ratings, options, and news transient.
+  Expose them through an injectable provider and bounded request cache without
+  adding persistence or a synchronization pipeline prematurely.
+
+## Current Analysis Conventions
+
+- Returns are simple returns represented as fractions.
+- Annualized volatility, alpha, Sharpe, and Sortino use 252 trading sessions.
+- Sharpe and Sortino currently use a zero risk-free rate.
+- Benchmark alpha and beta use only intersecting asset and benchmark dates.
+- Historical portfolio values assume current shares were held throughout the
+  selected period and retain only complete common-price dates.
+- Endpoint contributions exactly attribute the fixed-share return between the
+  first and last common dates.
+- Variance-risk contributions are a static-weight covariance approximation,
+  using latest common-date weights and ignoring weight drift and rebalancing.
+- The EOD screener maps momentum, return, risk, and trend inputs to documented
+  0-100 buckets. Its composite is penalized by the square root of input coverage.
+
+Research cache entries are bounded by LRU capacity and use per-category TTLs.
+Concurrent requests for the same key share one provider call. Expired entries
+may be returned only when a provider operation fails; validation errors are not
+masked. This cache is process-local and is not a source of truth.
 
 ## Market Data Pipeline
 

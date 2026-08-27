@@ -80,8 +80,9 @@ Routes:
 - `/api/*` provides JSON APIs.
 - `/docs` provides generated API documentation.
 
-The dashboard includes an EOD watchlist, holdings and allocation, stored price
-history, and technical analysis.
+The dashboard includes an EOD watchlist, holdings and allocation, local security
+search, stored price history, technical and risk analysis, a momentum screener,
+and on-demand company research.
 
 FastAPI routes delegate portfolio and technical calculations to shared Polars
 services. Durable market data is read from SQLite. Until the scheduled ingestion
@@ -100,6 +101,24 @@ The schema is user-scoped, while current API requests operate as the bootstrap
 - `/api/watchlist` reads and updates the current user's watchlist.
 - `/api/holdings` reads and updates portfolio lots.
 - `/api/analysis/{symbol}` returns stored technical history.
+- `/api/search` searches locally stored securities, with optional remote search.
+- `/api/risk` and `/api/portfolio/risk` return stored-EOD risk analysis.
+- `/api/screener` scores explicit symbols or the watchlist and holdings.
+- `/api/research/{symbol}/*` returns cached profile, analyst, earnings, options,
+  news, daily-history, and intraday provider responses.
+
+Risk-return fields are fractions. Annualized metrics use 252 trading sessions
+and a zero risk-free rate. Historical portfolio valuation assumes the currently
+stored shares were held for the full selected period and uses dates where every
+holding has an adjusted close. Return attribution compares the first and last
+common dates; variance-risk attribution uses static latest-date weights.
+
+Company research is not durable application data. It is requested explicitly
+through an injectable yfinance boundary and held in a bounded in-memory cache.
+Profiles are cached for 24 hours, analyst and earnings data for one hour, search
+and news for five minutes, options for one minute, and history/intraday data for
+30 seconds. Expired values are used as a fallback when the provider is briefly
+unavailable.
 
 The versioned, authenticated API remains planned work. See
 `docs/DATA_PIPELINE_ROADMAP.md` for the ingestion and API roadmap.

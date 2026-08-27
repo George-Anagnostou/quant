@@ -11,12 +11,15 @@
 - PR #4 reconciled the dashboard, CLI, analysis engine, portfolio metadata,
   SQLite user data, and shared API services into `master`.
 - The SQLite data-foundation update moved all durable market data into the same
-  database, added user ownership and provider-aware bars, and removed deferred
-  fundamentals, analyst, earnings, options, news, and intraday research paths.
+  database, added user ownership and provider-aware bars, and removed legacy
+  research persistence and direct-route provider calls.
+- The consolidation update restored risk analytics, local search, EOD screening,
+  and transient company research through shared services and a bounded cache.
 
 ## Consolidated Boundaries
 
-- `analysis.py` contains pure Polars portfolio and market calculations.
+- `analysis.py` contains pure Polars portfolio, return, risk, attribution,
+  correlation, and screener calculations.
 - `portfolio.py` owns shared stored-first portfolio analysis orchestration used by
   both CLI and dashboard.
 - `market_analysis.py` owns shared technical-analysis orchestration used by CLI
@@ -25,6 +28,8 @@
 - `market_store.py` owns securities, universes, and provider-aware daily bars.
 - `quotes.py` owns stored daily-bar resolution and temporary missing-only
   downloads until scheduled ingestion is implemented.
+- `research.py` owns injectable provider calls, JSON-safe conversion, bounded
+  TTL caching, single-flight requests, and stale fallback.
 - `dashboard/services.py` adapts shared analysis results to web response shapes.
 - `user_data.py` owns user-scoped SQLite positions and watchlists.
 - `dashboard/server.py` is a thin HTTP/static-file adapter.
