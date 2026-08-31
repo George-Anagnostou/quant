@@ -5,18 +5,16 @@ from pathlib import Path
 import polars as pl
 
 from quant.analysis import summarize_portfolio
-from quant.market_analysis import (
-    DEFAULT_MARKET_ANALYSIS_PATH,
-    analyze_symbols,
-    get_index_symbols,
+from quant.database import DEFAULT_DATABASE_PATH
+from quant.market_analysis import analyze_symbols, get_index_symbols
+from quant.market_data import (
+    get_sp500_constituents,
+    get_sp500_market_history,
+    latest_market_snapshot,
 )
-from quant.market_data import get_sp500_market_history, latest_market_snapshot
-from quant.portfolio import (
-    DEFAULT_PORTFOLIO_MARKET_DATA_PATH,
-    analyze_positions,
-)
-from quant.storage import DEFAULT_MARKET_DATA_PATH, load_market_data, save_market_data
-from quant.user_data import DEFAULT_USER_DATA_PATH, UserDataRepository
+from quant.market_store import MarketDataRepository
+from quant.portfolio import analyze_positions
+from quant.user_data import UserDataRepository
 
 GREEN = "\033[32m"
 RED = "\033[31m"
@@ -35,18 +33,13 @@ def main(argv: Sequence[str] | None = None) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="quant",
-        description="Cache-first portfolio and market analysis",
+        description="SQLite-backed portfolio and market analysis",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
     index = commands.add_parser("index", help="print the latest S&P 500 quotes")
     _add_refresh(index)
-    index.add_argument(
-        "--cache",
-        type=Path,
-        default=DEFAULT_MARKET_DATA_PATH,
-        help="index cache path",
-    )
+    _add_database(index)
     index.set_defaults(handler=_run_index)
 
     portfolio = commands.add_parser("portfolio", help="analyze the stored portfolio")
@@ -54,20 +47,8 @@ def _build_parser() -> argparse.ArgumentParser:
     portfolio.add_argument(
         "--database",
         type=Path,
-        default=DEFAULT_USER_DATA_PATH,
-        help="SQLite portfolio database path",
-    )
-    portfolio.add_argument(
-        "--cache",
-        type=Path,
-        default=DEFAULT_PORTFOLIO_MARKET_DATA_PATH,
-        help="supplemental quote cache path",
-    )
-    portfolio.add_argument(
-        "--index-cache",
-        type=Path,
-        default=DEFAULT_MARKET_DATA_PATH,
-        help="S&P 500 cache path",
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path",
     )
     portfolio.set_defaults(handler=_run_portfolio)
 
@@ -76,7 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
     market.add_argument(
         "--index",
         action="store_true",
-        help="analyze every symbol in the cached S&P 500",
+        help="analyze every symbol in the stored S&P 500 universe",
     )
     market.add_argument(
         "--windows",
@@ -93,18 +74,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="price basis for calculations",
     )
     _add_refresh(market)
-    market.add_argument(
-        "--cache",
-        type=Path,
-        default=DEFAULT_MARKET_ANALYSIS_PATH,
-        help="market-analysis cache path",
-    )
-    market.add_argument(
-        "--index-cache",
-        type=Path,
-        default=DEFAULT_MARKET_DATA_PATH,
-        help="S&P 500 cache path",
-    )
+    _add_database(market)
     market.set_defaults(handler=_run_market)
     return parser
 
@@ -113,18 +83,31 @@ def _add_refresh(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--refresh",
         action="store_true",
-        help="replace cached values with fresh Yahoo data",
+        help="replace stored observations with fresh Yahoo data",
+    )
+
+
+def _add_database(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path",
     )
 
 
 def _run_index(args: argparse.Namespace) -> None:
-    if args.refresh or not args.cache.exists():
-        history = get_sp500_market_history()
-        save_market_data(history, args.cache)
-        print(f"Downloaded and cached {history.height:,} rows at {args.cache}")
+    repository = MarketDataRepository(args.database)
+    symbols = repository.list_universe_symbols("sp500")
+    if args.refresh or not symbols:
+        constituents = get_sp500_constituents()
+        history = get_sp500_market_history(constituents)
+        repository.save_universe("sp500", constituents)
+        repository.save(history)
+        print(f"Downloaded and stored {history.height:,} rows in {args.database}")
     else:
-        history = load_market_data(args.cache)
-        print(f"Loaded {history.height:,} cached rows from {args.cache}")
+        history = repository.load(symbols)
+        print(f"Loaded {history.height:,} rows from {args.database}")
 
     snapshot = latest_market_snapshot(history)
     display = snapshot.select(
@@ -151,7 +134,11 @@ def _run_portfolio(args: argparse.Namespace) -> None:
     if positions.is_empty():
         print("Portfolio is empty")
         return
-    analysis = analyze_positions(positions, args.index_cache, args.cache, args.refresh)
+    analysis = analyze_positions(
+        positions,
+        MarketDataRepository(args.database),
+        args.refresh,
+    )
     summary = summarize_portfolio(analysis).row(0, named=True)
     total_return = summary["Gain/Loss %"]
     formatted_return = (
@@ -170,11 +157,14 @@ def _run_portfolio(args: argparse.Namespace) -> None:
     ).with_columns(
         pl.col("Quantity").map_elements(_quantity, return_dtype=pl.String),
         pl.col("Average Cost", "Last Price", "Market Value")
-        .map_elements(_currency, return_dtype=pl.String),
-        pl.col("Gain/Loss").map_elements(_colored_currency, return_dtype=pl.String),
+        .map_elements(_currency, return_dtype=pl.String)
+        .fill_null("N/A"),
+        pl.col("Gain/Loss")
+        .map_elements(_colored_currency, return_dtype=pl.String)
+        .fill_null("N/A"),
         pl.col("Gain/Loss %").map_elements(
             _colored_percentage, return_dtype=pl.String
-        ),
+        ).fill_null("N/A"),
         pl.col("Weight %")
         .map_elements(_percentage, return_dtype=pl.String)
         .fill_null("N/A"),
@@ -184,8 +174,12 @@ def _run_portfolio(args: argparse.Namespace) -> None:
     print(
         f"Market value: {_currency(summary['Market Value'])} | "
         f"Cost basis: {_currency(summary['Cost Basis'])} | "
-        f"Gain/loss: {_colored_currency(summary['Gain/Loss'])} ({formatted_return})"
+        f"Gain/loss: {_colored_currency(summary['Gain/Loss']) or 'N/A'} "
+        f"({formatted_return})"
     )
+    unpriced = analysis.filter(pl.col("Last Price").is_null()).get_column("Symbol")
+    if not unpriced.is_empty():
+        print(f"Market data unavailable for: {', '.join(unpriced.unique())}")
     _print_table(display, width=180)
 
 
@@ -194,15 +188,16 @@ def _run_market(args: argparse.Namespace) -> None:
         raise ValueError("provide symbols or --index, but not both")
 
     windows = list(dict.fromkeys(args.windows))
-    symbols = get_index_symbols(args.index_cache) if args.index else args.symbols
+    repository = MarketDataRepository(args.database)
+    symbols = get_index_symbols(repository) if args.index else args.symbols
     price_column = "Adjusted Close" if args.price == "adjusted" else "Close"
     analysis = analyze_symbols(
         symbols,
         windows,
         price_column,
-        args.index_cache,
-        args.cache,
+        repository,
         args.refresh,
+        allow_missing=args.index,
     )
     snapshot = latest_market_snapshot(analysis)
     price_metrics = [
@@ -279,7 +274,9 @@ def _quantity(value: float) -> str:
     return f"{value:,.4f}".rstrip("0").rstrip(".")
 
 
-def _currency(value: float) -> str:
+def _currency(value: float | None) -> str:
+    if value is None:
+        return "N/A"
     return f"-${abs(value):,.2f}" if value < 0 else f"${value:,.2f}"
 
 

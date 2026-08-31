@@ -1,8 +1,16 @@
 import unittest
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
-from quant.market_data import get_latest_market_data
+import polars as pl
+
+from quant.market_data import (
+    _is_completed_daily_bar,
+    get_market_history,
+    get_latest_market_data,
+    get_sp500_market_history,
+)
 
 
 class FakeSeries:
@@ -63,6 +71,51 @@ class FakeHistory:
 
 
 class LatestMarketDataTests(unittest.TestCase):
+    @patch("quant.market_data.get_market_history")
+    def test_sp500_history_omits_constituents_without_bars(
+        self,
+        get_market_history,
+    ) -> None:
+        constituents = pl.DataFrame(
+            {
+                "Symbol": ["AAPL", "MISSING"],
+                "Company": ["Apple Inc.", "Missing Inc."],
+            }
+        )
+        get_market_history.return_value = pl.DataFrame(
+            {
+                "Date": [date(2026, 8, 21)],
+                "Symbol": ["AAPL"],
+                "Open": [223.0],
+                "High": [226.0],
+                "Low": [222.0],
+                "Close": [225.50],
+                "Adjusted Close": [225.50],
+                "Last Price": [225.50],
+                "Volume": [2_000_000],
+            }
+        )
+
+        result = get_sp500_market_history(constituents)
+
+        self.assertEqual(result.get_column("Symbol").to_list(), ["AAPL"])
+    def test_accepts_current_session_only_after_settlement_cutoff(self) -> None:
+        eastern = ZoneInfo("America/New_York")
+        session = date(2026, 8, 25)
+
+        self.assertFalse(
+            _is_completed_daily_bar(
+                session,
+                datetime(2026, 8, 25, 19, 59, tzinfo=eastern),
+            )
+        )
+        self.assertTrue(
+            _is_completed_daily_bar(
+                session,
+                datetime(2026, 8, 25, 20, 0, tzinfo=eastern),
+            )
+        )
+
     @patch("quant.market_data.yf.download", return_value=FakeHistory())
     def test_downloads_all_symbols_in_one_batch(self, download) -> None:
         result = get_latest_market_data(["BRK.B", "AAPL"])
@@ -76,6 +129,11 @@ class LatestMarketDataTests(unittest.TestCase):
                 {"Symbol": "AAPL", "Last Price": 225.50, "Volume": 2_000_000},
             ],
         )
+
+    @patch("quant.market_data.yf.download", side_effect=OSError("offline"))
+    def test_reports_provider_failures_consistently(self, download) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Yahoo market data request failed"):
+            get_market_history(["AAPL"])
 
 
 if __name__ == "__main__":

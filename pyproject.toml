@@ -1,7 +1,7 @@
 [project]
 name = "quant"
 version = "0.1.0"
-description = "Add your description here"
+description = "SQLite-backed US equity portfolio and market analysis"
 readme = "README.md"
 authors = [
     { name = "George Anagnostou", email = "anagnostougeorgejohn@gmail.com" }

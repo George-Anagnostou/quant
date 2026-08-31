@@ -1,8 +1,8 @@
 # Quant
 
-Quant is a cache-first portfolio and market-analysis project built with Polars.
-It provides a terminal CLI and a FastAPI dashboard backed by shared analysis and
-market-data services.
+Quant is a US equity portfolio and market-research project built with SQLite and
+Polars. It provides a terminal CLI and a FastAPI dashboard backed by shared
+market-data, portfolio, and analysis services.
 
 ## Install
 
@@ -14,19 +14,20 @@ uv sync
 
 ## CLI
 
-Print the latest cached S&P 500 constituent quotes:
+Print the latest stored S&P 500 constituent quotes. An empty database is
+populated from Wikipedia and Yahoo Finance on first use:
 
 ```sh
 uv run quant index
 ```
 
-Refresh the index cache from Yahoo Finance:
+Refresh stored index observations from Yahoo Finance:
 
 ```sh
 uv run quant index --refresh
 ```
 
-Analyze the SQLite portfolio using cached prices first:
+Analyze the SQLite portfolio using stored prices first:
 
 ```sh
 uv run quant portfolio
@@ -38,13 +39,15 @@ Use an alternate SQLite database when needed:
 uv run quant portfolio --database /path/to/quant.db
 ```
 
+The `index` and `market` commands accept the same `--database` option.
+
 Analyze selected symbols with explicit trading-session windows and price basis:
 
 ```sh
 uv run quant market AAPL MSFT --windows 5 20 --price adjusted
 ```
 
-Analyze the full cached S&P 500:
+Analyze the full stored S&P 500 universe:
 
 ```sh
 uv run quant market --index --windows 5 20 --price adjusted
@@ -65,11 +68,11 @@ Run the FastAPI dashboard:
 uv run quant-dashboard
 ```
 
-Open http://127.0.0.1:8001. Override the bind address when needed:
+Open http://127.0.0.1:8001.
 
-```sh
-HOST=0.0.0.0 PORT=9000 uv run quant-dashboard
-```
+The current API is unauthenticated and always acts as `local-admin`. Keep it
+bound to loopback and do not expose it to a LAN or the internet until Clerk
+authentication is implemented.
 
 Routes:
 
@@ -77,24 +80,57 @@ Routes:
 - `/api/*` provides JSON APIs.
 - `/docs` provides generated API documentation.
 
-The dashboard includes a watchlist, holdings, stock history, fundamentals,
-analyst ratings, earnings, options, and news.
+The dashboard includes an EOD watchlist, holdings and allocation, local security
+search, stored price history, technical and risk analysis, a momentum screener,
+and on-demand company research.
 
-FastAPI routes delegate portfolio and technical calculations to the shared
-Polars services. Yahoo research and intraday responses are isolated behind a
-separate provider boundary.
+FastAPI routes delegate portfolio and technical calculations to shared Polars
+services. Durable market data is read from SQLite. Until the scheduled ingestion
+pipeline is implemented, missing history is fetched from Yahoo Finance once and
+stored before analysis.
 
-The CLI and dashboard both use `data/quant.db` as the source of truth for
-position lots and watchlists. Positions are added and removed through the
-dashboard API or by writing to the repository; CSV is no longer part of the
-runtime portfolio workflow.
+The CLI and dashboard both use `data/quant.db` as the sole source of truth for
+users, position lots, watchlists, securities, universes, and daily market bars.
+The schema is user-scoped, while current API requests operate as the bootstrap
+`local-admin` user until application authentication is added.
+
+## API
+
+- `/api/health` reports server availability.
+- `/api/quotes` and `/api/quote/{symbol}` return stored EOD observations.
+- `/api/watchlist` reads and updates the current user's watchlist.
+- `/api/holdings` reads and updates portfolio lots.
+- `/api/analysis/{symbol}` returns stored technical history.
+- `/api/search` searches locally stored securities, with optional remote search.
+- `/api/risk` and `/api/portfolio/risk` return stored-EOD risk analysis.
+- `/api/screener` scores explicit symbols or the watchlist and holdings.
+- `/api/research/{symbol}/*` returns cached profile, analyst, earnings, options,
+  news, daily-history, and intraday provider responses.
+
+Risk-return fields are fractions. Annualized metrics use 252 trading sessions
+and a zero risk-free rate. Historical portfolio valuation assumes the currently
+stored shares were held for the full selected period and uses dates where every
+holding has an adjusted close. Return attribution compares the first and last
+common dates; variance-risk attribution uses static latest-date weights.
+
+Company research is not durable application data. It is requested explicitly
+through an injectable yfinance boundary and held in a bounded in-memory cache.
+Profiles are cached for 24 hours, analyst and earnings data for one hour, search
+and news for five minutes, options for one minute, and history/intraday data for
+30 seconds. Expired values are used as a fallback when the provider is briefly
+unavailable.
+
+The versioned, authenticated API remains planned work. See
+`docs/DATA_PIPELINE_ROADMAP.md` for the ingestion and API roadmap.
 
 ## Storage
 
-- `data/sp500_market_data.parquet` stores cached index bars.
-- `data/portfolio_market_data.parquet` stores supplemental portfolio quotes.
-- `data/market_analysis.parquet` stores full bars used by market analysis.
-- `data/quant.db` stores app-managed position lots and watchlists.
+`data/quant.db` is the only runtime data store. SQLite uses WAL mode, foreign
+keys, short transactions, and provider-separated daily bars. Generated database,
+WAL, and shared-memory files are ignored by Git.
+
+This pre-release schema starts fresh and does not migrate older local database
+layouts. Delete `data/quant.db*` after switching from an earlier branch.
 
 ## Tests
 
@@ -105,5 +141,6 @@ PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s tests
 Unit tests must mock Yahoo and Wikipedia boundaries; they should not require
 network access.
 
-See `INTEGRATION_REVIEW.md` for the merged PR inventory, consolidated ownership,
-and intentional CLI/web differences that remain open for product review.
+See `INTEGRATION_REVIEW.md` for the merged PR inventory and current ownership
+boundaries. See `docs/DATA_PIPELINE_ROADMAP.md` for planned ingestion,
+authentication, API, deployment, and historical-analysis work.

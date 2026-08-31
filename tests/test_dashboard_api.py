@@ -1,10 +1,28 @@
 import unittest
 from unittest.mock import patch
 
+from pydantic import ValidationError
+
 from quant.dashboard import server
 
 
 class DashboardApiTests(unittest.TestCase):
+    def test_analysis_and_research_routes_are_registered(self) -> None:
+        paths = {route.path for route in server.app.routes}
+
+        self.assertIn("/api/risk", paths)
+        self.assertIn("/api/portfolio/risk", paths)
+        self.assertIn("/api/screener", paths)
+        self.assertIn("/api/search", paths)
+        self.assertIn("/api/research/{symbol}/profile", paths)
+        self.assertIn("/api/research/{symbol}/analyst", paths)
+        self.assertIn("/api/research/{symbol}/options", paths)
+        self.assertIn("/api/research/{symbol}/news", paths)
+
+    def test_rejects_non_finite_holding_input(self) -> None:
+        with self.assertRaises(ValidationError):
+            server.HoldingIn(symbol="AAPL", shares=float("nan"), costBasis=100)
+
     def test_health(self) -> None:
         self.assertEqual(server.health(), {"ok": True})
 
@@ -28,18 +46,56 @@ class DashboardApiTests(unittest.TestCase):
             "AAPL", [20, 50], "adjusted", False
         )
 
-    @patch("quant.dashboard.server._research_service")
-    def test_research_routes_delegate_to_provider(self, service) -> None:
+    @patch("quant.dashboard.server._dashboard_service")
+    def test_quote_routes_delegate_to_core_service(self, service) -> None:
         service.quote.return_value = {"symbol": "AAPL", "price": 125.0}
-        service.history.return_value = {"symbol": "AAPL", "candles": []}
 
         quote = server.quote("aapl")
-        history = server.history("AAPL", "1mo", "1d")
 
         self.assertEqual(quote["price"], 125.0)
-        self.assertEqual(history["candles"], [])
-        service.quote.assert_called_once_with("aapl")
-        service.history.assert_called_once_with("AAPL", "1mo", "1d")
+        service.quote.assert_called_once_with("aapl", False)
+
+    @patch("quant.dashboard.server._dashboard_service")
+    def test_risk_and_screener_routes_parse_symbols(self, service) -> None:
+        service.symbol_risk.return_value = {"metrics": []}
+        service.screener.return_value = {"rows": []}
+
+        server.symbol_risk("aapl, msft,", "6mo", "spy", True)
+        server.screener("aapl,msft", "1y", "SPY", False)
+
+        service.symbol_risk.assert_called_once_with(
+            ["aapl", "msft"], "6mo", "spy", True
+        )
+        service.screener.assert_called_once_with(
+            ["aapl", "msft"], "1y", "SPY", False
+        )
+
+    @patch("quant.dashboard.server._dashboard_service")
+    def test_research_routes_delegate_with_request_options(self, service) -> None:
+        service.research_options.return_value = {"calls": [], "puts": []}
+        service.research_intraday.return_value = []
+
+        server.research_options("AAPL", "2026-09-18", 50)
+        server.research_intraday("AAPL", "5d", "15m", 100)
+
+        service.research_options.assert_called_once_with(
+            "AAPL", "2026-09-18", 50
+        )
+        service.research_intraday.assert_called_once_with(
+            "AAPL", "5d", "15m", 100
+        )
+
+    @patch("quant.dashboard.server._dashboard_service")
+    def test_maps_service_validation_and_provider_errors(self, service) -> None:
+        service.security_search.side_effect = ValueError("invalid search")
+        with self.assertRaisesRegex(server.HTTPException, "invalid search") as error:
+            server.security_search("", 10, False)
+        self.assertEqual(error.exception.status_code, 422)
+
+        service.research_profile.side_effect = RuntimeError("provider down")
+        with self.assertRaisesRegex(server.HTTPException, "provider down") as error:
+            server.research_profile("AAPL")
+        self.assertEqual(error.exception.status_code, 502)
 
 
 if __name__ == "__main__":
