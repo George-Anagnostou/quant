@@ -58,8 +58,16 @@ def analyze_portfolio_risk(
     """Analyze fixed current shares over common stored EOD sessions."""
     if positions.is_empty():
         raise ValueError("Portfolio has no positions")
+    if "Symbol" not in positions.columns or any(
+        not isinstance(symbol, str)
+        for symbol in positions.get_column("Symbol").to_list()
+    ):
+        raise ValueError("Portfolio symbols must be strings")
+    positions = positions.with_columns(
+        pl.col("Symbol").str.strip_chars().str.to_uppercase()
+    )
     symbols = positions.get_column("Symbol").unique(maintain_order=True).to_list()
-    requested, benchmark_symbol, history = load_eod_analysis_history(
+    requested, benchmark_symbol, history, _ = load_eod_analysis_history(
         symbols,
         period,
         benchmark_symbol,
@@ -73,14 +81,14 @@ def analyze_portfolio_risk(
         .get_column("Symbol")
         .to_list()
     )
+    if benchmark_symbol not in available:
+        raise RuntimeError(
+            f"Market data unavailable for benchmark: {benchmark_symbol}"
+        )
     unavailable = [symbol for symbol in requested if symbol not in available]
     if unavailable:
         raise RuntimeError(
             f"Portfolio risk data unavailable for: {', '.join(unavailable)}"
-        )
-    if benchmark_symbol not in available:
-        raise RuntimeError(
-            f"Market data unavailable for benchmark: {benchmark_symbol}"
         )
 
     asset_history = history.filter(pl.col("Symbol").is_in(requested))
@@ -92,8 +100,12 @@ def analyze_portfolio_risk(
         pl.lit("Portfolio").alias("Symbol"),
         pl.col("Portfolio Return").alias("Return"),
     )
+    common_dates = portfolio_history.select("Date")
+    asset_history = asset_history.join(common_dates, on="Date", how="inner")
     benchmark_returns = calculate_daily_returns(
-        history.filter(pl.col("Symbol") == benchmark_symbol)
+        history.filter(pl.col("Symbol") == benchmark_symbol).join(
+            common_dates, on="Date", how="inner"
+        )
     ).select("Date", "Return")
     summary = summarize_risk_metrics(portfolio_returns)
     benchmark = calculate_benchmark_metrics(
