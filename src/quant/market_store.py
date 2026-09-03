@@ -11,6 +11,7 @@ from quant.database import (
     DEFAULT_DATABASE_PATH,
     database_connection,
     initialize_database,
+    is_database_initialized,
 )
 
 
@@ -27,14 +28,29 @@ MARKET_DATA_SCHEMA = {
     "Last Price": pl.Float64,
     "Volume": pl.Int64,
 }
+MARKET_STORAGE_SCHEMA = {
+    **MARKET_DATA_SCHEMA,
+    "Provider": pl.String,
+    "Retrieved At": pl.String,
+}
 
 
 class MarketDataRepository:
-    def __init__(self, path: Path = DEFAULT_DATABASE_PATH) -> None:
+    def __init__(
+        self, path: Path = DEFAULT_DATABASE_PATH, *, read_only: bool = False
+    ) -> None:
         self.path = path
+        self.read_only = read_only
 
     def initialize(self) -> None:
-        initialize_database(self.path)
+        if self.read_only:
+            if not is_database_initialized(self.path):
+                raise RuntimeError("Market database is not initialized")
+        else:
+            initialize_database(self.path)
+
+    def _connect(self):
+        return database_connection(self.path, read_only=self.read_only)
 
     def save(
         self,
@@ -102,7 +118,7 @@ class MarketDataRepository:
                 )
             )
 
-        with database_connection(self.path) as connection:
+        with self._connect() as connection:
             security_ids = self._upsert_securities(connection, symbols)
             rows = [(security_ids[bar[0]], *bar[1:]) for bar in bars]
             connection.executemany(
@@ -134,7 +150,7 @@ class MarketDataRepository:
     ) -> pl.DataFrame:
         self.initialize()
         selected = columns or list(MARKET_DATA_SCHEMA)
-        unknown = set(selected).difference(MARKET_DATA_SCHEMA)
+        unknown = set(selected).difference(MARKET_STORAGE_SCHEMA)
         if unknown:
             names = ", ".join(sorted(unknown))
             raise ValueError(f"Unknown market data columns: {names}")
@@ -161,11 +177,12 @@ class MarketDataRepository:
             conditions.append("b.session_date <= ?")
             parameters.append(end.isoformat())
 
-        with database_connection(self.path) as connection:
+        with self._connect() as connection:
             records = connection.execute(
                 f"""
                 SELECT b.session_date, s.symbol, s.company, b.open, b.high,
-                       b.low, b.close, b.adjusted_close, b.volume
+                       b.low, b.close, b.adjusted_close, b.volume,
+                       b.provider, b.retrieved_at
                 FROM daily_bars AS b
                 JOIN securities AS s ON s.id = b.security_id
                 WHERE {' AND '.join(conditions)}
@@ -188,10 +205,79 @@ class MarketDataRepository:
                 "Adjusted Close": [row["adjusted_close"] for row in records],
                 "Last Price": [row["close"] for row in records],
                 "Volume": [row["volume"] for row in records],
+                "Provider": [row["provider"] for row in records],
+                "Retrieved At": [row["retrieved_at"] for row in records],
             },
-            schema=MARKET_DATA_SCHEMA,
+            schema=MARKET_STORAGE_SCHEMA,
         )
         return frame.select(selected)
+
+    def coverage(
+        self,
+        symbols: list[str] | None = None,
+        provider: str = DEFAULT_PROVIDER,
+    ) -> pl.DataFrame:
+        self.initialize()
+        provider = provider.strip().lower()
+        if not provider:
+            raise ValueError("Provider is required")
+        conditions = ["b.provider = ?"]
+        parameters: list[object] = [provider]
+        if symbols is not None:
+            symbols = list(
+                dict.fromkeys(
+                    symbol.strip().upper() for symbol in symbols if symbol.strip()
+                )
+            )
+            if not symbols:
+                return _empty_coverage()
+            placeholders = ", ".join("?" for _ in symbols)
+            conditions.append(f"s.symbol IN ({placeholders})")
+            parameters.extend(symbols)
+        with self._connect() as connection:
+            records = connection.execute(
+                f"""
+                SELECT s.symbol, MIN(b.session_date) AS first_session,
+                       MAX(b.session_date) AS last_session,
+                       COUNT(*) AS session_count,
+                       SUM(CASE WHEN b.open IS NOT NULL
+                                     AND b.high IS NOT NULL
+                                     AND b.low IS NOT NULL
+                                     AND b.volume IS NOT NULL
+                                THEN 1 ELSE 0 END) AS complete_ohlcv_count,
+                       SUM(CASE WHEN b.adjusted_close IS NOT NULL
+                                THEN 1 ELSE 0 END) AS adjusted_close_count,
+                       MAX(b.retrieved_at) AS retrieved_at
+                FROM daily_bars AS b
+                JOIN securities AS s ON s.id = b.security_id
+                WHERE {' AND '.join(conditions)}
+                GROUP BY s.symbol
+                ORDER BY s.symbol
+                """,
+                parameters,
+            ).fetchall()
+        if not records:
+            return _empty_coverage()
+        return pl.DataFrame(
+            {
+                "Symbol": [row["symbol"] for row in records],
+                "First Session": [
+                    date.fromisoformat(row["first_session"]) for row in records
+                ],
+                "Last Session": [
+                    date.fromisoformat(row["last_session"]) for row in records
+                ],
+                "Session Count": [row["session_count"] for row in records],
+                "Complete OHLCV Count": [
+                    row["complete_ohlcv_count"] for row in records
+                ],
+                "Adjusted Close Count": [
+                    row["adjusted_close_count"] for row in records
+                ],
+                "Retrieved At": [row["retrieved_at"] for row in records],
+            },
+            schema=_coverage_schema(),
+        )
 
     def search_securities(
         self,
@@ -211,7 +297,7 @@ class MarketDataRepository:
 
         self.initialize()
         query = query.strip().lower()
-        with database_connection(self.path) as connection:
+        with self._connect() as connection:
             records = connection.execute(
                 """
                 SELECT symbol, company
@@ -260,7 +346,7 @@ class MarketDataRepository:
         symbols = constituents.select("Symbol", company).unique(
             subset="Symbol", keep="last", maintain_order=True
         )
-        with database_connection(self.path) as connection:
+        with self._connect() as connection:
             security_ids = self._upsert_securities(connection, symbols)
             self._save_universe(
                 connection,
@@ -271,7 +357,7 @@ class MarketDataRepository:
 
     def list_universe_symbols(self, universe: str) -> list[str]:
         self.initialize()
-        with database_connection(self.path) as connection:
+        with self._connect() as connection:
             observed_on = connection.execute(
                 """
                 SELECT MAX(observed_on)
@@ -347,8 +433,24 @@ class MarketDataRepository:
 
 
 def _empty_market_data(columns: list[str]) -> pl.DataFrame:
-    schema = {column: MARKET_DATA_SCHEMA[column] for column in columns}
+    schema = {column: MARKET_STORAGE_SCHEMA[column] for column in columns}
     return pl.DataFrame(schema=schema)
+
+
+def _coverage_schema() -> dict[str, pl.DataType]:
+    return {
+        "Symbol": pl.String,
+        "First Session": pl.Date,
+        "Last Session": pl.Date,
+        "Session Count": pl.Int64,
+        "Complete OHLCV Count": pl.Int64,
+        "Adjusted Close Count": pl.Int64,
+        "Retrieved At": pl.String,
+    }
+
+
+def _empty_coverage() -> pl.DataFrame:
+    return pl.DataFrame(schema=_coverage_schema())
 
 
 def _require_columns(frame: pl.DataFrame, required: set[str]) -> None:

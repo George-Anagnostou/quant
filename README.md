@@ -79,6 +79,8 @@ Routes:
 - `/` serves the dashboard.
 - `/api/*` provides JSON APIs.
 - `/docs` provides generated API documentation.
+- `/api/v1/*` provides the stored-only automation API.
+- `/api/v1/docs` documents the isolated, typed v1 contract.
 
 The dashboard includes an EOD watchlist, holdings and allocation, local security
 search, stored price history, technical and risk analysis, a momentum screener,
@@ -120,8 +122,58 @@ and news for five minutes, options for one minute, and history/intraday data for
 30 seconds. Expired values are used as a fallback when the provider is briefly
 unavailable.
 
-The versioned, authenticated API remains planned work. See
-`docs/DATA_PIPELINE_ROADMAP.md` for the ingestion and API roadmap.
+The stored-only v1 read API is available. Authentication, synchronization, and
+write contracts remain planned work; see `docs/DATA_PIPELINE_ROADMAP.md`.
+
+## Automation CLI
+
+`quant-api` is a machine-readable client for the stored-only `/api/v1` API. It
+is intentionally separate from the human-oriented, SQLite-direct `quant`
+commands. Start `quant-dashboard` first, then query prepared data with:
+
+```sh
+uv run quant-api health
+uv run quant-api status AAPL MSFT
+uv run quant-api quotes AAPL MSFT
+uv run quant-api bars AAPL --start 2026-01-01 --limit 100
+uv run quant-api technical AAPL --windows 20 50 200
+uv run quant-api risk AAPL MSFT --period 1y --benchmark SPY
+uv run quant-api screener AAPL MSFT
+uv run quant-api portfolio
+uv run quant-api portfolio-risk --period 1y
+```
+
+Responses are deterministic JSON envelopes containing `data`, `meta`, and
+`warnings`. Configure the client with `QUANT_API_BASE_URL` and
+`QUANT_API_TIMEOUT`, or the corresponding `--base-url` and `--timeout` options.
+Global options work before or after the command. Use `--pretty` for indented
+output. Success JSON is written to stdout; errors are written to stderr as
+`{"ok":false,"error":...}` and use these stable exit codes:
+
+| Code | Meaning |
+| ---: | --- |
+| 2 | Invalid command or local configuration |
+| 3 | Connection or transport failure |
+| 4 | Timeout |
+| 5 | API 4xx response |
+| 6 | API 5xx response |
+| 7 | Invalid API response |
+| 130 | Interrupted by the user |
+
+The API rejects unknown and repeated query parameters so misspelled agent input
+cannot silently change request semantics. It also refuses redirects and the CLI
+rejects oversized, malformed, duplicate-key, and non-finite JSON responses.
+
+V1 GET requests never contact Yahoo or write to SQLite. Missing or incomplete
+stored data is reported through partial-data warnings or an
+`insufficient_data` error. Populate or refresh data through the existing local
+commands until explicit synchronization APIs are implemented.
+
+All v1 returns, weights, alpha, volatility, and contributions are fractions;
+`0.0125` means 1.25%. Screener scores remain on a 0-100 scale. Every market-data
+response identifies its observation date, provider, price basis, and a simple
+calendar-day freshness status. Data status separately reports close-bar,
+complete-OHLCV, and adjusted-close coverage.
 
 ## Storage
 

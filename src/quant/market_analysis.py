@@ -46,6 +46,7 @@ def analyze_symbols(
     repository: MarketDataRepository | None = None,
     refresh: bool = False,
     allow_missing: bool = False,
+    fetch_missing: bool = True,
 ) -> pl.DataFrame:
     symbols = list(
         dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip())
@@ -84,6 +85,7 @@ def analyze_symbols(
         refresh=refresh,
         start=start,
         allow_missing=allow_missing,
+        fetch_missing=fetch_missing,
     )
     if market_history.is_empty():
         raise RuntimeError("Market data unavailable for requested symbols")
@@ -106,6 +108,7 @@ def analyze_symbol_risk(
     benchmark_symbol: str = "SPY",
     repository: MarketDataRepository | None = None,
     refresh: bool = False,
+    fetch_missing: bool = True,
 ) -> dict[str, pl.DataFrame]:
     asset_symbols, benchmark_symbol, history, period_history = (
         load_eod_analysis_history(
@@ -114,6 +117,7 @@ def analyze_symbol_risk(
             benchmark_symbol,
             repository,
             refresh,
+            fetch_missing,
         )
     )
     if benchmark_symbol not in _accepted_symbols([benchmark_symbol], history):
@@ -165,6 +169,7 @@ def screen_symbols_eod(
     benchmark_symbol: str = "SPY",
     repository: MarketDataRepository | None = None,
     refresh: bool = False,
+    fetch_missing: bool = True,
 ) -> pl.DataFrame:
     asset_symbols, benchmark_symbol, history, period_history = (
         load_eod_analysis_history(
@@ -173,6 +178,7 @@ def screen_symbols_eod(
             benchmark_symbol,
             repository,
             refresh,
+            fetch_missing,
         )
     )
     if benchmark_symbol not in _accepted_symbols([benchmark_symbol], history):
@@ -204,6 +210,7 @@ def load_eod_analysis_history(
     benchmark_symbol: str,
     repository: MarketDataRepository | None,
     refresh: bool,
+    fetch_missing: bool = True,
 ) -> tuple[list[str], str, pl.DataFrame, pl.DataFrame]:
     asset_symbols = _normalize_symbols(symbols)
     benchmark_symbol = _normalize_benchmark(benchmark_symbol)
@@ -224,6 +231,7 @@ def load_eod_analysis_history(
         refresh=refresh,
         start=start,
         allow_missing=True,
+        fetch_missing=fetch_missing,
     )
     history = history.drop_nulls(EOD_HISTORY_COLUMNS).filter(
         pl.col("Symbol").is_in(requested)
@@ -260,7 +268,7 @@ def load_eod_analysis_history(
         ):
             gap_symbols.append(benchmark_symbol)
         gap_symbols = list(dict.fromkeys(gap_symbols))
-        if gap_symbols:
+        if gap_symbols and fetch_missing:
             resolve_market_history(
                 gap_symbols,
                 repository,
@@ -291,7 +299,7 @@ def load_eod_analysis_history(
             .get_column("Symbol")
             .to_list()
         )
-        if context_missing:
+        if context_missing and fetch_missing:
             resolve_market_history(
                 context_missing,
                 repository,

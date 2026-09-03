@@ -24,6 +24,7 @@ def load_portfolio_market_data(
     symbols: Iterable[str],
     repository: MarketDataRepository | None = None,
     refresh: bool = False,
+    fetch_missing: bool = True,
 ) -> pl.DataFrame:
     repository = repository or MarketDataRepository()
     return resolve_market_history(
@@ -32,6 +33,7 @@ def load_portfolio_market_data(
         MARKET_DATA_COLUMNS,
         refresh=refresh,
         allow_missing=True,
+        fetch_missing=fetch_missing,
     )
 
 
@@ -39,11 +41,13 @@ def analyze_positions(
     positions: pl.DataFrame,
     repository: MarketDataRepository | None = None,
     refresh: bool = False,
+    fetch_missing: bool = True,
 ) -> pl.DataFrame:
     market_data = load_portfolio_market_data(
         positions.get_column("Symbol").unique(maintain_order=True).to_list(),
         repository,
         refresh,
+        fetch_missing,
     )
     return analyze_portfolio(positions, market_data)
 
@@ -54,6 +58,7 @@ def analyze_portfolio_risk(
     benchmark_symbol: str = "SPY",
     repository: MarketDataRepository | None = None,
     refresh: bool = False,
+    fetch_missing: bool = True,
 ) -> dict[str, pl.DataFrame | list[str]]:
     """Analyze fixed current shares over common stored EOD sessions."""
     if positions.is_empty():
@@ -73,6 +78,7 @@ def analyze_portfolio_risk(
         benchmark_symbol,
         repository,
         refresh,
+        fetch_missing,
     )
     available = set(
         history.group_by("Symbol")

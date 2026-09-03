@@ -46,23 +46,46 @@ def initialize_database(path: Path = DEFAULT_DATABASE_PATH) -> None:
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
+def is_database_initialized(path: Path = DEFAULT_DATABASE_PATH) -> bool:
+    if not path.is_file():
+        return False
+    connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        version = _schema_version(connection)
+        if version == SCHEMA_VERSION:
+            return True
+        if version == 0 and not _application_tables(connection):
+            return False
+        raise sqlite3.DatabaseError("Unsupported database schema")
+    finally:
+        connection.close()
+
+
 @contextmanager
 def database_connection(
     path: Path = DEFAULT_DATABASE_PATH,
+    *,
+    read_only: bool = False,
 ) -> Iterator[sqlite3.Connection]:
-    with _open_connection(path) as connection:
+    with _open_connection(path, read_only=read_only) as connection:
         yield connection
 
 
 @contextmanager
 def _open_connection(
     path: Path,
+    *,
+    read_only: bool = False,
 ) -> Iterator[sqlite3.Connection]:
-    connection = sqlite3.connect(path, timeout=30)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA busy_timeout = 30000")
-    connection.execute("PRAGMA foreign_keys = ON")
+    connection = sqlite3.connect(
+        f"{path.resolve().as_uri()}?mode=ro" if read_only else path,
+        timeout=30,
+        uri=read_only,
+    )
     try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 30000")
+        connection.execute("PRAGMA foreign_keys = ON")
         with connection:
             yield connection
     finally:

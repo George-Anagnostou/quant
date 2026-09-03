@@ -15,6 +15,7 @@ def resolve_market_history(
     refresh: bool = False,
     start: date | None = None,
     allow_missing: bool = False,
+    fetch_missing: bool = True,
 ) -> pl.DataFrame:
     symbols = list(
         dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip())
@@ -32,9 +33,13 @@ def resolve_market_history(
         .get_column("Symbol")
         .to_list()
     )
-    symbols_to_download = (
-        symbols if refresh else [symbol for symbol in symbols if symbol not in available]
-    )
+    symbols_to_download = []
+    if fetch_missing:
+        symbols_to_download = (
+            symbols
+            if refresh
+            else [symbol for symbol in symbols if symbol not in available]
+        )
     if symbols_to_download:
         try:
             downloaded = (

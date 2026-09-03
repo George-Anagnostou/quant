@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, FiniteFloat
 
 from quant.dashboard.services import DashboardService
+from quant.dashboard.api_v1 import app as api_v1_app
 
 
 app = FastAPI(title="Quant Dashboard API")
@@ -21,6 +22,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.mount("/api/v1", api_v1_app)
 
 _dashboard_service = DashboardService()
 

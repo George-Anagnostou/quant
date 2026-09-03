@@ -89,6 +89,31 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertEqual(quote["changePercent"], 25.0)
         self.assertEqual(quote["asOf"], "2026-08-21")
 
+    def test_data_status_uses_the_stalest_requested_symbol(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "quant.db"
+            market_repository = MarketDataRepository(path)
+            market_repository.save(
+                pl.DataFrame(
+                    {
+                        "Date": [date(2026, 8, 1), date(2026, 8, 21)],
+                        "Symbol": ["STALE", "CURRENT"],
+                        "Close": [10.0, 20.0],
+                    }
+                )
+            )
+            service = DashboardService(
+                UserDataRepository(path), market_repository
+            )
+
+            result = service.data_status(["CURRENT", "STALE"])
+
+        self.assertEqual(result["summary"]["lastSession"], "2026-08-01")
+        self.assertEqual(
+            [row["symbol"] for row in result["coverage"]],
+            ["CURRENT", "STALE"],
+        )
+
     @patch("quant.dashboard.services.analyze_positions")
     def test_values_persisted_lots_with_core_analysis(self, analyze_positions) -> None:
         market_data = pl.DataFrame(
