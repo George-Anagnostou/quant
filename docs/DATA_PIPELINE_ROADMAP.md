@@ -46,7 +46,9 @@ in-memory cache, but do not persist those responses.
 - Keep repositories user-scoped and add Clerk authentication before exposing
   the application beyond loopback.
 - Permanently store end-of-day market data only.
-- Backfill ten years of daily history for tracked equities.
+- Use January 1, 2025 as the current operational history horizon. Keep the
+  synchronization design horizon-configurable so it can expand without a
+  schema change.
 - Continue using yfinance behind a replaceable provider adapter.
 - Use one SQLite database at `data/quant.db` for application and market data.
 - Keep intraday data, fundamentals, analyst ratings, options, and news transient.
@@ -93,10 +95,11 @@ Each synchronization cycle follows the same deterministic stages:
 
 ### Backfill Policy
 
-A ten-year backfill is one logical job executed in batches of approximately 25
-to 100 symbols. Each batch requests the full date range, validates independently,
-and commits separately. Failed batches are split before retrying. Progress is
-persisted so interrupted jobs can resume.
+A configured-horizon backfill is one logical job executed in batches of
+approximately 25 to 100 symbols. The current horizon starts on January 1, 2025.
+Each batch requests the full date range, validates independently, and commits
+separately. Failed batches are split before retrying. Progress is persisted so
+interrupted jobs can resume.
 
 Historical data should not be fetched one day or month at a time unless a
 provider requires it.
@@ -202,6 +205,10 @@ accepting user identity in request bodies.
 
 ## API Contract
 
+The initial stored-only read contract and machine-readable `quant-api` client
+are implemented. The next contract increments are specified in
+[`API_EXPANSION_PLAN.md`](API_EXPANSION_PLAN.md).
+
 Introduce a versioned `/api/v1` contract before encouraging custom consumers.
 Core resources include:
 
@@ -257,21 +264,23 @@ that bridge with explicit synchronization and validation.
 5. Delete the local Parquet files without importing them.
 6. Update tests and project documentation.
 
-### Phase 3: Provider And Synchronization
+### Phase 3: Provider And Synchronization (In Progress)
 
 1. Define a provider protocol returning canonical Polars frames.
 2. Place yfinance behind a Yahoo provider implementation.
-3. Build batched ten-year backfills and incremental EOD synchronization.
+3. Replace the manual January 2025 backfill with resumable, configurable-horizon
+   backfills and incremental EOD synchronization.
 4. Add validation, audit records, and resumable sync requests.
 5. Add `quant data sync`, `quant data status`, and `quant data check`.
 
-### Phase 4: API v1
+### Phase 4: API v1 (Read Contract Implemented)
 
 1. Add Clerk authentication to the existing user-scoped repositories.
-2. Add typed, versioned API endpoints.
-3. Serve daily history and technical analysis only from SQLite.
-4. Return freshness and provenance metadata.
-5. Convert the web UI and user-facing CLI to API consumers.
+2. Extend the typed, versioned endpoints using the API expansion plan.
+3. Continue serving daily history and technical analysis only from SQLite.
+4. Preserve freshness, provenance, warnings, and deterministic errors.
+5. Convert the web UI to the v1 contract; keep `quant-api` as the automation
+   client and reserve `quant` for local operator workflows.
 
 ### Phase 5: Background Operation
 
