@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import logging
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +13,17 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, FiniteFloat
 
 from quant.dashboard.services import DashboardService
+from quant.dashboard.api_alpha import (
+    app as api_alpha_app,
+    configure_service as configure_alpha_service,
+)
+from quant.market_store import MarketDataRepository
+from quant.startup_sync import synchronize_on_startup
+from quant.user_data import UserDataRepository
 
 
-app = FastAPI(title="Quant Dashboard API")
+logger = logging.getLogger(__name__)
+app = FastAPI(title="Quant Web Server")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -21,6 +31,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.mount("/api/alpha", api_alpha_app)
 
 _dashboard_service = DashboardService()
 
@@ -293,14 +304,51 @@ if STATIC_DIR.exists():
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
 
-def run() -> None:
-    import os
-
+def run(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8001,
+    database: Path = Path("data/quant.db"),
+    sync_enabled: bool = True,
+    horizon: date = date(2025, 1, 1),
+    batch_size: int = 50,
+) -> None:
     import uvicorn
 
+    logging.basicConfig(level=logging.INFO)
+    configure(database)
+    if sync_enabled:
+        logger.info("Synchronizing market data before server startup")
+        try:
+            result = synchronize_on_startup(
+                database, horizon=horizon, batch_size=batch_size
+            )
+        except Exception:
+            logger.exception(
+                "Startup synchronization failed; serving existing stored data"
+            )
+        else:
+            logger.info(
+                "Startup synchronization finished: %s rows, %s failed symbols",
+                result.savedRows,
+                len(result.failedSymbols),
+            )
     uvicorn.run(
-        "quant.dashboard.server:app",
-        host=os.environ.get("HOST", "127.0.0.1"),
-        port=int(os.environ.get("PORT", "8001")),
+        app,
+        host=host,
+        port=port,
         reload=False,
+    )
+
+
+def configure(database: Path) -> None:
+    global _dashboard_service
+    _dashboard_service = DashboardService(
+        UserDataRepository(database), MarketDataRepository(database)
+    )
+    configure_alpha_service(
+        DashboardService(
+            UserDataRepository(database, read_only=True),
+            MarketDataRepository(database, read_only=True),
+        )
     )

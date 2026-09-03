@@ -1,5 +1,5 @@
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -141,6 +141,7 @@ class PortfolioInputTests(unittest.TestCase):
             ["AAA", "BBB"],
             "SPY",
             history,
+            history,
         )
 
         result = analyze_portfolio_risk(positions)
@@ -170,16 +171,18 @@ class PortfolioInputTests(unittest.TestCase):
         positions = pl.DataFrame(
             {"Symbol": ["AAA", "BBB"], "Quantity": [1.0, 1.0]}
         )
+        history = pl.DataFrame(
+            {
+                "Date": [date(2026, 1, 1), date(2026, 1, 2)] * 2,
+                "Symbol": ["AAA", "AAA", "SPY", "SPY"],
+                "Adjusted Close": [10.0, 11.0, 100.0, 101.0],
+            }
+        )
         load_eod_analysis_history.return_value = (
             ["AAA", "BBB"],
             "SPY",
-            pl.DataFrame(
-                {
-                    "Date": [date(2026, 1, 1)] * 2,
-                    "Symbol": ["AAA", "SPY"],
-                    "Adjusted Close": [10.0, 100.0],
-                }
-            ),
+            history,
+            history,
         )
 
         with self.assertRaisesRegex(RuntimeError, "BBB"):
@@ -190,19 +193,84 @@ class PortfolioInputTests(unittest.TestCase):
         self, load_eod_analysis_history
     ) -> None:
         positions = pl.DataFrame({"Symbol": ["AAA"], "Quantity": [1.0]})
+        history = pl.DataFrame(
+            {
+                "Date": [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 2)],
+                "Symbol": ["AAA", "AAA", "SPY"],
+                "Adjusted Close": [10.0, 11.0, 100.0],
+            }
+        )
         load_eod_analysis_history.return_value = (
             ["AAA"],
             "SPY",
-            pl.DataFrame(
-                {
-                    "Date": [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 2)],
-                    "Symbol": ["AAA", "AAA", "SPY"],
-                    "Adjusted Close": [10.0, 11.0, 100.0],
-                }
-            ),
+            history,
+            history,
         )
 
         with self.assertRaisesRegex(RuntimeError, "benchmark: SPY"):
+            analyze_portfolio_risk(positions)
+
+    @patch("quant.quotes.get_market_history")
+    def test_values_benchmark_when_it_is_also_a_portfolio_holding(
+        self, get_market_history
+    ) -> None:
+        today = date(2026, 9, 1)
+        recent_dates = [
+            today - timedelta(days=21 - index) for index in range(22)
+        ]
+        dates = [
+            date(today.year - 1, 12, 31),
+            date(today.year, 1, 2),
+            *recent_dates,
+        ]
+        history = pl.DataFrame(
+            {
+                "Date": dates * 2,
+                "Symbol": ["AAA"] * 24 + ["SPY"] * 24,
+                "Close": [100.0 + index for index in range(24)]
+                + [200.0 + index * 2 for index in range(24)],
+                "Adjusted Close": [100.0 + index for index in range(24)]
+                + [200.0 + index * 2 for index in range(24)],
+            }
+        )
+        positions = pl.DataFrame(
+            {"Symbol": ["aaa", "spy"], "Quantity": [1.0, 2.0]}
+        )
+        with TemporaryDirectory() as directory:
+            repository = MarketDataRepository(Path(directory) / "quant.db")
+            repository.save(history)
+
+            with patch("quant.market_analysis.datetime") as current_datetime:
+                current_datetime.now.return_value.date.return_value = today
+                result = analyze_portfolio_risk(
+                    positions, period="1mo", repository=repository
+                )
+                benchmark_only = analyze_portfolio_risk(
+                    positions.filter(pl.col("Symbol") == "spy"),
+                    period="1mo",
+                    repository=repository,
+                )
+
+        get_market_history.assert_not_called()
+        self.assertEqual(result["history"].height, 22)
+        self.assertEqual(
+            set(result["return_contributions"].get_column("Symbol")),
+            {"AAA", "SPY"},
+        )
+        self.assertEqual(
+            set(result["risk_contributions"].get_column("Symbol")),
+            {"AAA", "SPY"},
+        )
+        self.assertAlmostEqual(benchmark_only["metrics"].item(0, "Beta"), 1.0)
+        self.assertEqual(
+            benchmark_only["return_contributions"].get_column("Symbol").to_list(),
+            ["SPY"],
+        )
+
+    def test_rejects_non_string_portfolio_symbols(self) -> None:
+        positions = pl.DataFrame({"Symbol": [123], "Quantity": [1.0]})
+
+        with self.assertRaisesRegex(ValueError, "symbols must be strings"):
             analyze_portfolio_risk(positions)
 
 

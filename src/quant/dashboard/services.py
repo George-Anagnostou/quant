@@ -6,6 +6,7 @@ from datetime import date, datetime
 import polars as pl
 
 from quant.analysis import summarize_allocation, summarize_portfolio
+from quant.database import is_database_initialized
 from quant.market_analysis import (
     analyze_symbol_risk,
     analyze_symbols,
@@ -29,14 +30,22 @@ class DashboardService:
         repository: UserDataRepository | None = None,
         market_repository: MarketDataRepository | None = None,
         research_service: CachedResearchService | None = None,
+        *,
+        read_only: bool = False,
     ) -> None:
-        self.repository = repository or UserDataRepository()
+        self.repository = repository or UserDataRepository(read_only=read_only)
         self.market_repository = market_repository or MarketDataRepository(
-            self.repository.path
+            self.repository.path, read_only=read_only
         )
         self.research_service = research_service or CachedResearchService(
             YahooResearchProvider()
         )
+
+    def market_database_ready(self) -> bool:
+        return is_database_initialized(self.market_repository.path)
+
+    def user_database_ready(self) -> bool:
+        return is_database_initialized(self.repository.path)
 
     def watchlist(self) -> list[str]:
         return self.repository.list_watchlist()
@@ -47,7 +56,12 @@ class DashboardService:
     def remove_watchlist(self, symbol: str) -> list[str]:
         return self.repository.remove_watchlist(symbol)
 
-    def quotes(self, symbols: list[str], refresh: bool = False) -> dict:
+    def quotes(
+        self,
+        symbols: list[str],
+        refresh: bool = False,
+        fetch_missing: bool = True,
+    ) -> dict:
         symbols = list(
             dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip())
         )
@@ -62,10 +76,19 @@ class DashboardService:
             minimum_sessions=2,
             refresh=refresh,
             allow_missing=True,
+            fetch_missing=fetch_missing,
         )
         history = self.market_repository.load(
             symbols,
-            columns=["Date", "Symbol", "Company", "Close", "Volume"],
+            columns=[
+                "Date",
+                "Symbol",
+                "Company",
+                "Close",
+                "Volume",
+                "Provider",
+                "Retrieved At",
+            ],
         ).sort(["Symbol", "Date"])
         history = history.with_columns(
             pl.col("Close").shift(1).over("Symbol").alias("Previous Close")
@@ -95,6 +118,8 @@ class DashboardService:
                     "changePercent": change_percent,
                     "volume": row["Volume"],
                     "asOf": row["Date"].isoformat(),
+                    "provider": row["Provider"],
+                    "retrievedAt": row["Retrieved At"],
                     "currency": "USD",
                 }
             )
@@ -109,7 +134,122 @@ class DashboardService:
             raise ValueError(f"Market data unavailable for {symbol.upper()}")
         return quote
 
-    def holdings(self, refresh: bool = False) -> dict:
+    def market_bars(
+        self,
+        symbol: str,
+        start: date | None = None,
+        end: date | None = None,
+        limit: int = 500,
+    ) -> dict:
+        symbol = symbol.strip().upper()
+        if not symbol:
+            raise ValueError("Symbol is required")
+        if start is not None and end is not None and start > end:
+            raise ValueError("Start date cannot be after end date")
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 5_000
+        ):
+            raise ValueError("Bar limit must be between 1 and 5000")
+        history = self.market_repository.load(
+            [symbol],
+            start=start,
+            end=end,
+            columns=[
+                "Date",
+                "Symbol",
+                "Open",
+                "High",
+                "Low",
+                "Close",
+                "Adjusted Close",
+                "Volume",
+                "Provider",
+                "Retrieved At",
+            ],
+        )
+        if history.is_empty():
+            raise RuntimeError(f"Stored market data unavailable for {symbol}")
+        total = history.height
+        history = history.tail(limit)
+        return {
+            "symbol": symbol,
+            "bars": _frame_records(history.drop("Symbol")),
+            "page": {
+                "limit": limit,
+                "returned": history.height,
+                "total": total,
+                "truncated": total > history.height,
+            },
+        }
+
+    def data_status(self, symbols: list[str] | None = None) -> dict:
+        normalized = None
+        if symbols is not None:
+            normalized = list(
+                dict.fromkeys(
+                    symbol.strip().upper()
+                    for symbol in symbols
+                    if isinstance(symbol, str) and symbol.strip()
+                )
+            )
+            if len(normalized) > MAX_SCREENER_SYMBOLS:
+                raise ValueError(
+                    f"Data status accepts at most {MAX_SCREENER_SYMBOLS} symbols"
+                )
+        coverage = self.market_repository.coverage(normalized)
+        records = {row["Symbol"]: row for row in coverage.to_dicts()}
+        ordered_symbols = normalized or coverage.get_column("Symbol").to_list()
+        rows = []
+        for symbol in ordered_symbols:
+            row = records.get(symbol)
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "firstSession": (
+                        row["First Session"].isoformat() if row else None
+                    ),
+                    "lastSession": row["Last Session"].isoformat() if row else None,
+                    "sessionCount": row["Session Count"] if row else 0,
+                    "completeOhlcvSessionCount": (
+                        row["Complete OHLCV Count"] if row else 0
+                    ),
+                    "adjustedCloseSessionCount": (
+                        row["Adjusted Close Count"] if row else 0
+                    ),
+                    "retrievedAt": row["Retrieved At"] if row else None,
+                }
+            )
+        available = [row for row in rows if row["sessionCount"]]
+        return {
+            "storage": "sqlite",
+            "provider": "yahoo",
+            "summary": {
+                "securityCount": len(available),
+                "barCount": sum(row["sessionCount"] for row in available),
+                "completeOhlcvBarCount": sum(
+                    row["completeOhlcvSessionCount"] for row in available
+                ),
+                "adjustedCloseBarCount": sum(
+                    row["adjustedCloseSessionCount"] for row in available
+                ),
+                "firstSession": min(
+                    (row["firstSession"] for row in available), default=None
+                ),
+                "lastSession": min(
+                    (row["lastSession"] for row in available), default=None
+                ),
+                "retrievedAt": min(
+                    (row["retrievedAt"] for row in available), default=None
+                ),
+            },
+            "coverage": rows,
+        }
+
+    def holdings(
+        self, refresh: bool = False, fetch_missing: bool = True
+    ) -> dict:
         frame = self.repository.positions_frame()
         if frame.is_empty():
             return {
@@ -133,6 +273,7 @@ class DashboardService:
             frame,
             self.market_repository,
             refresh,
+            fetch_missing,
         )
         summary = summarize_portfolio(analysis).row(0, named=True)
         holdings = [self._holding_response(row) for row in analysis.to_dicts()]
@@ -188,6 +329,7 @@ class DashboardService:
         windows: list[int],
         price: str,
         refresh: bool = False,
+        fetch_missing: bool = True,
     ) -> dict:
         if price not in {"close", "adjusted"}:
             raise ValueError("Price must be close or adjusted")
@@ -198,6 +340,7 @@ class DashboardService:
             price_column,
             self.market_repository,
             refresh,
+            fetch_missing=fetch_missing,
         )
         rows = []
         for row in analysis.sort("Date").to_dicts():
@@ -262,6 +405,7 @@ class DashboardService:
         period: str = "1y",
         benchmark: str = "SPY",
         refresh: bool = False,
+        fetch_missing: bool = True,
     ) -> dict:
         result = analyze_symbol_risk(
             symbols,
@@ -269,12 +413,22 @@ class DashboardService:
             benchmark,
             self.market_repository,
             refresh,
+            fetch_missing,
         )
         return {
             "period": period.lower(),
             "benchmark": benchmark.upper(),
             "metrics": _frame_records(result["metrics"]),
             "correlations": _frame_records(result["correlations"]),
+            "unavailableSymbols": [
+                symbol
+                for symbol in dict.fromkeys(
+                    value.strip().upper() for value in symbols if value.strip()
+                )
+                if symbol
+                not in set(result["metrics"].get_column("Symbol").to_list())
+                and symbol != benchmark.strip().upper()
+            ],
         }
 
     def portfolio_risk(
@@ -282,6 +436,7 @@ class DashboardService:
         period: str = "1y",
         benchmark: str = "SPY",
         refresh: bool = False,
+        fetch_missing: bool = True,
     ) -> dict:
         result = analyze_portfolio_risk(
             self.repository.positions_frame(),
@@ -289,6 +444,7 @@ class DashboardService:
             benchmark,
             self.market_repository,
             refresh,
+            fetch_missing,
         )
         return {
             "period": period.lower(),
@@ -311,6 +467,7 @@ class DashboardService:
         period: str = "1y",
         benchmark: str = "SPY",
         refresh: bool = False,
+        fetch_missing: bool = True,
     ) -> dict:
         if symbols is None:
             positions = self.repository.positions_frame()
@@ -339,11 +496,18 @@ class DashboardService:
             benchmark,
             self.market_repository,
             refresh,
+            fetch_missing,
         )
         return {
             "period": period.lower(),
             "benchmark": benchmark.upper(),
             "rows": _frame_records(screen),
+            "unavailableSymbols": [
+                symbol
+                for symbol in symbols
+                if symbol not in set(screen.get_column("Symbol").to_list())
+                and symbol != benchmark.strip().upper()
+            ],
         }
 
     def research_profile(self, symbol: str) -> dict:

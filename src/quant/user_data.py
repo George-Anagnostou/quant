@@ -13,6 +13,7 @@ from quant.database import (
     MAX_WATCHLIST_SYMBOLS,
     database_connection,
     initialize_database,
+    is_database_initialized,
 )
 
 DEFAULT_USER_DATA_PATH = DEFAULT_DATABASE_PATH
@@ -24,12 +25,19 @@ class UserDataRepository:
         self,
         path: Path = DEFAULT_USER_DATA_PATH,
         user_id: str = LOCAL_ADMIN_USER_ID,
+        *,
+        read_only: bool = False,
     ) -> None:
         self.path = path
         self.user_id = user_id
+        self.read_only = read_only
 
     def initialize(self) -> None:
-        initialize_database(self.path)
+        if self.read_only:
+            if not is_database_initialized(self.path):
+                raise RuntimeError("User database is not initialized")
+        else:
+            initialize_database(self.path)
         with self._connect() as connection:
             user = connection.execute(
                 "SELECT 1 FROM users WHERE id = ?", (self.user_id,)
@@ -210,7 +218,7 @@ class UserDataRepository:
         return self.list_watchlist()
 
     def _connect(self):
-        return database_connection(self.path)
+        return database_connection(self.path, read_only=self.read_only)
 
 
 def _clean_optional(value: str | None) -> str | None:

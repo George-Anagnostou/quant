@@ -18,7 +18,6 @@ dependencies = [
 
 [project.scripts]
 quant = "quant.cli:main"
-quant-dashboard = "quant.dashboard:run"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]

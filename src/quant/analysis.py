@@ -1,3 +1,5 @@
+from datetime import date
+
 import polars as pl
 
 from quant.market_data import latest_market_snapshot
@@ -31,6 +33,11 @@ def analyze_portfolio(
         pl.col("Date").alias("As Of"),
         "Last Price",
     )
+    if quotes.filter(
+        pl.col("Last Price").is_not_null()
+        & (~pl.col("Last Price").is_finite() | (pl.col("Last Price") <= 0.0))
+    ).height:
+        raise ValueError("Market prices must be finite and positive")
     analysis = positions.join(quotes, on="Symbol", how="left", validate="m:1")
 
     analysis = (
@@ -101,6 +108,7 @@ def summarize_allocation(
         {dimension, "Cost Basis", "Market Value", "Gain/Loss"},
         "portfolio analysis",
     )
+    analysis = analysis.filter(pl.col("Market Value").is_not_null())
     total_value = analysis.get_column("Market Value").sum()
     if total_value is None or total_value <= 0:
         raise ValueError("Portfolio market value must be positive")
@@ -132,11 +140,33 @@ def analyze_market_history(
     _require_columns(market_history, required, "market history")
     windows = list(dict.fromkeys(windows))
     if not windows or any(
-        not isinstance(window, int) or window <= 0 for window in windows
+        not isinstance(window, int)
+        or isinstance(window, bool)
+        or window <= 0
+        for window in windows
     ):
         raise ValueError("Analysis windows must be positive integers")
     if price_column not in {"Close", "Adjusted Close"}:
         raise ValueError("Price column must be Close or Adjusted Close")
+    _validate_price_history(market_history, price_column)
+    if market_history.filter(
+        pl.col("High").is_null()
+        | ~pl.col("High").is_finite()
+        | (pl.col("High") <= 0.0)
+        | pl.col("Low").is_null()
+        | ~pl.col("Low").is_finite()
+        | (pl.col("Low") <= 0.0)
+        | (pl.col("High") < pl.col("Low"))
+        | pl.col("Close").is_null()
+        | ~pl.col("Close").is_finite()
+        | (pl.col("Close") <= 0.0)
+        | (pl.col("High") < pl.col("Close"))
+        | (pl.col("Low") > pl.col("Close"))
+        | pl.col("Volume").is_null()
+        | ~pl.col("Volume").is_finite()
+        | (pl.col("Volume") < 0.0)
+    ).height:
+        raise ValueError("Market prices and volume must be valid")
 
     analysis = market_history.sort(["Symbol", "Date"])
     if price_column == "Adjusted Close":
@@ -225,9 +255,23 @@ def calculate_daily_returns(
 def calculate_period_returns(
     price_history: pl.DataFrame,
     price_column: str = "Adjusted Close",
+    ytd_base_date: date | None = None,
+    require_exact_ytd_base: bool = False,
 ) -> pl.DataFrame:
     """Calculate calendar-cutoff period returns as fractions per symbol."""
     _validate_price_history(price_history, price_column)
+    if ytd_base_date is not None and not isinstance(ytd_base_date, date):
+        raise ValueError("YTD base date must be a date")
+    ytd_filter = (
+        pl.col("Date") == pl.lit(ytd_base_date)
+        if require_exact_ytd_base and ytd_base_date is not None
+        else (
+            pl.lit(False)
+            if require_exact_ytd_base
+            else pl.col("Date").dt.year()
+            < pl.col("Date").max().dt.year()
+        )
+    )
     ordered = price_history.select("Date", "Symbol", price_column).sort(
         "Symbol", "Date"
     )
@@ -248,13 +292,21 @@ def calculate_period_returns(
         )
         .first()
         .alias("_One Month Start Date"),
+        pl.col("Date")
+        .filter(ytd_filter)
+        .last()
+        .alias("_YTD Start Date"),
         pl.col(price_column)
+        .filter(ytd_filter)
+        .last()
+        .alias("_YTD Start Price"),
+        pl.col("Date")
         .filter(
             pl.col("Date").dt.year()
             == pl.col("Date").max().dt.year()
         )
         .first()
-        .alias("_YTD Start Price"),
+        .alias("_First Current Year Date"),
         pl.col("Date")
         .filter(
             pl.col("Date")
@@ -297,9 +349,19 @@ def calculate_period_returns(
             )
             .otherwise(None)
             .alias("One Month Return"),
-            (
-                pl.col("_Latest Price") / pl.col("_YTD Start Price") - 1.0
-            ).alias("YTD Return"),
+            pl.when(
+                (pl.col("_First Current Year Date").dt.ordinal_day() <= 10)
+                & (
+                    (
+                        pl.col("_First Current Year Date")
+                        - pl.col("_YTD Start Date")
+                    ).dt.total_days()
+                    <= 10
+                )
+            )
+            .then(pl.col("_Latest Price") / pl.col("_YTD Start Price") - 1.0)
+            .otherwise(None)
+            .alias("YTD Return"),
             pl.when(
                 (
                     pl.col("_Twelve-One End Date")
@@ -484,6 +546,9 @@ def calculate_benchmark_metrics(
 def score_eod_momentum_screen(
     price_history: pl.DataFrame,
     benchmark_symbol: str = "SPY",
+    period_history: pl.DataFrame | None = None,
+    ytd_base_date: date | None = None,
+    require_exact_ytd_base: bool = False,
 ) -> pl.DataFrame:
     """Score an adjusted-close EOD screen with deterministic linear buckets.
 
@@ -494,6 +559,10 @@ def score_eod_momentum_screen(
     score times sqrt(available raw inputs / 9).
     """
     _validate_price_history(price_history, "Adjusted Close")
+    if period_history is None:
+        period_history = price_history
+    else:
+        _validate_price_history(period_history, "Adjusted Close")
     if not isinstance(benchmark_symbol, str) or not benchmark_symbol.strip():
         raise ValueError("Benchmark symbol must not be blank")
     if not price_history.filter(
@@ -533,7 +602,11 @@ def score_eod_momentum_screen(
     benchmark = calculate_benchmark_metrics(
         asset_returns, benchmark_returns
     ).rename({"Observations": "Benchmark Observations"})
-    periods = calculate_period_returns(ordered).drop("Latest Date")
+    periods = calculate_period_returns(
+        period_history,
+        ytd_base_date=ytd_base_date,
+        require_exact_ytd_base=require_exact_ytd_base,
+    ).drop("Latest Date")
 
     screen = (
         technicals.join(periods, on="Symbol", how="left", validate="1:1")

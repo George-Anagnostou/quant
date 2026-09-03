@@ -1,4 +1,7 @@
 import unittest
+from datetime import date
+from pathlib import Path
+from unittest.mock import Mock
 from unittest.mock import patch
 
 from pydantic import ValidationError
@@ -7,6 +10,49 @@ from quant.dashboard import server
 
 
 class DashboardApiTests(unittest.TestCase):
+    @patch("uvicorn.run")
+    @patch("quant.dashboard.server.synchronize_on_startup")
+    @patch("quant.dashboard.server.configure")
+    def test_server_syncs_before_uvicorn_starts(
+        self, configure, synchronize, uvicorn_run
+    ) -> None:
+        synchronize.return_value = Mock(savedRows=10, failedSymbols=[])
+        calls = Mock()
+        calls.attach_mock(synchronize, "sync")
+        calls.attach_mock(uvicorn_run, "serve")
+
+        server.run(
+            host="localhost",
+            port=9000,
+            database=Path("market.db"),
+            sync_enabled=True,
+            horizon=date(2025, 1, 1),
+            batch_size=25,
+        )
+
+        configure.assert_called_once_with(Path("market.db"))
+        synchronize.assert_called_once_with(
+            Path("market.db"), horizon=date(2025, 1, 1), batch_size=25
+        )
+        uvicorn_run.assert_called_once_with(
+            server.app, host="localhost", port=9000, reload=False
+        )
+        self.assertEqual(
+            [call[0] for call in calls.mock_calls], ["sync", "serve"]
+        )
+
+    @patch("uvicorn.run")
+    @patch("quant.dashboard.server.synchronize_on_startup")
+    @patch("quant.dashboard.server.configure")
+    def test_no_sync_skips_provider_work(
+        self, configure, synchronize, uvicorn_run
+    ) -> None:
+        server.run(database=Path("test.db"), sync_enabled=False)
+
+        configure.assert_called_once_with(Path("test.db"))
+        synchronize.assert_not_called()
+        uvicorn_run.assert_called_once()
+
     def test_analysis_and_research_routes_are_registered(self) -> None:
         paths = {route.path for route in server.app.routes}
 

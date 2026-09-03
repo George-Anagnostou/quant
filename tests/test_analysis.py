@@ -123,6 +123,28 @@ class PortfolioAnalysisTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "quantities must be positive"):
             analyze_portfolio(positions, market_history)
 
+        positions = positions.with_columns(pl.lit(1.0).alias("Quantity"))
+        invalid_market_history = market_history.with_columns(
+            pl.lit(math.inf).alias("Last Price")
+        )
+        with self.assertRaisesRegex(ValueError, "Market prices"):
+            analyze_portfolio(positions, invalid_market_history)
+
+    def test_omits_unpriced_groups_from_market_value_allocation(self) -> None:
+        analysis = pl.DataFrame(
+            {
+                "Account": ["taxable", "roth"],
+                "Cost Basis": [80.0, 50.0],
+                "Market Value": [100.0, None],
+                "Gain/Loss": [20.0, None],
+            }
+        )
+
+        result = summarize_allocation(analysis, "Account")
+
+        self.assertEqual(result.get_column("Account").to_list(), ["taxable"])
+        self.assertEqual(result.item(0, "Weight %"), 100.0)
+
 
 class MarketAnalysisTests(unittest.TestCase):
     def test_calculates_adjusted_price_and_volume_indicators(self) -> None:
@@ -155,6 +177,28 @@ class MarketAnalysisTests(unittest.TestCase):
         self.assertEqual(latest["Volume SMA 2"], 250.0)
         self.assertEqual(latest["Relative Volume 2"], 1.2)
 
+    def test_rejects_duplicate_sessions_and_invalid_market_values(self) -> None:
+        duplicate = pl.DataFrame(
+            {
+                "Date": [date(2026, 8, 21), date(2026, 8, 21)],
+                "Symbol": ["AAA", "AAA"],
+                "High": [11.0, 11.0],
+                "Low": [9.0, 9.0],
+                "Close": [10.0, 10.0],
+                "Volume": [100, 100],
+            }
+        )
+        invalid_range = duplicate.head(1).with_columns(
+            pl.lit(8.0).alias("High")
+        )
+
+        with self.assertRaisesRegex(ValueError, "duplicate symbol-date"):
+            analyze_market_history(duplicate, [2], "Close")
+        with self.assertRaisesRegex(ValueError, "prices and volume"):
+            analyze_market_history(invalid_range, [2], "Close")
+        with self.assertRaisesRegex(ValueError, "positive integers"):
+            analyze_market_history(invalid_range, [True], "Close")
+
 
 class ReturnAnalyticsTests(unittest.TestCase):
     def test_calculates_calendar_period_returns_without_using_older_history(
@@ -179,7 +223,7 @@ class ReturnAnalyticsTests(unittest.TestCase):
 
         self.assertEqual(result["Latest Date"], date(2026, 2, 15))
         self.assertAlmostEqual(result["One Month Return"], 0.2)
-        self.assertAlmostEqual(result["YTD Return"], 0.32)
+        self.assertAlmostEqual(result["YTD Return"], 132 / 90 - 1)
         self.assertAlmostEqual(result["Twelve-One Momentum"], 0.25)
 
     def test_twelve_one_return_requires_distinct_start_and_end_dates(self) -> None:
@@ -207,7 +251,25 @@ class ReturnAnalyticsTests(unittest.TestCase):
         result = calculate_period_returns(history).row(0, named=True)
 
         self.assertIsNone(result["One Month Return"])
+        self.assertIsNone(result["YTD Return"])
         self.assertIsNone(result["Twelve-One Momentum"])
+
+    def test_ytd_requires_a_plausible_prior_year_end_close(self) -> None:
+        history = pl.DataFrame(
+            {
+                "Date": [
+                    date(2025, 6, 30),
+                    date(2026, 8, 1),
+                    date(2026, 8, 31),
+                ],
+                "Symbol": ["AAA"] * 3,
+                "Adjusted Close": [80.0, 100.0, 120.0],
+            }
+        )
+
+        result = calculate_period_returns(history).row(0, named=True)
+
+        self.assertIsNone(result["YTD Return"])
 
     def test_calculates_simple_returns_per_symbol_in_date_order(self) -> None:
         history = pl.DataFrame(

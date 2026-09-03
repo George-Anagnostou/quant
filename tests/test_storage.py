@@ -1,4 +1,5 @@
 import math
+import sqlite3
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -8,11 +9,50 @@ from tempfile import TemporaryDirectory
 import polars as pl
 from polars.testing import assert_frame_equal
 
-from quant.database import database_connection
+from quant.database import database_connection, is_database_initialized
 from quant.market_store import MarketDataRepository
+from quant.user_data import UserDataRepository
 
 
 class MarketDataStorageTests(unittest.TestCase):
+    def test_read_only_repositories_read_but_cannot_write(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "quant ?# data.db"
+            frame = pl.DataFrame({"Date": [date(2026, 8, 21)], "Symbol": ["AAPL"], "Close": [100.0]})
+            MarketDataRepository(path).save(frame)
+            UserDataRepository(path).add_watchlist("AAPL")
+            market = MarketDataRepository(path, read_only=True)
+            user = UserDataRepository(path, read_only=True)
+            self.assertTrue(is_database_initialized(path))
+            self.assertEqual(market.load()["Close"][0], 100.0)
+            self.assertEqual(user.list_watchlist(), ["AAPL"])
+            with self.assertRaises(sqlite3.OperationalError):
+                market.save(frame)
+            with self.assertRaises(sqlite3.OperationalError):
+                user.add_position("AAPL", 1, 10)
+            with self.assertRaises(sqlite3.OperationalError):
+                user.remove_watchlist("AAPL")
+
+    def test_read_only_connection_never_creates_missing_database(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "missing.db"
+            with self.assertRaises(sqlite3.OperationalError):
+                with database_connection(path, read_only=True):
+                    pass
+            self.assertFalse(path.exists())
+
+    def test_corrupt_or_incompatible_database_is_not_reported_as_empty(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "quant.db"
+            path.write_bytes(b"not a sqlite database")
+            with self.assertRaises(sqlite3.DatabaseError):
+                is_database_initialized(path)
+            other = Path(directory) / "future.db"
+            with database_connection(other) as connection:
+                connection.execute("PRAGMA user_version = 999")
+            with self.assertRaises(sqlite3.DatabaseError):
+                is_database_initialized(other)
+
     def test_round_trips_market_data_through_sqlite(self) -> None:
         market_data = pl.DataFrame(
             {
@@ -61,6 +101,31 @@ class MarketDataStorageTests(unittest.TestCase):
             self.assertEqual(
                 repository.load(provider="replacement")["Close"][0], 225.75
             )
+
+    def test_exposes_storage_provenance_and_coverage(self) -> None:
+        market_data = pl.DataFrame(
+            {
+                "Date": [date(2026, 8, 20), date(2026, 8, 21)],
+                "Symbol": ["AAPL", "AAPL"],
+                "Close": [224.0, 225.5],
+            }
+        )
+        with TemporaryDirectory() as directory:
+            repository = MarketDataRepository(Path(directory) / "quant.db")
+            repository.save(market_data)
+
+            stored = repository.load(
+                ["AAPL"], columns=["Symbol", "Provider", "Retrieved At"]
+            )
+            coverage = repository.coverage(["AAPL"]).row(0, named=True)
+
+        self.assertEqual(stored.get_column("Provider").to_list(), ["yahoo"] * 2)
+        self.assertTrue(all(stored.get_column("Retrieved At")))
+        self.assertEqual(coverage["First Session"], date(2026, 8, 20))
+        self.assertEqual(coverage["Last Session"], date(2026, 8, 21))
+        self.assertEqual(coverage["Session Count"], 2)
+        self.assertEqual(coverage["Complete OHLCV Count"], 0)
+        self.assertEqual(coverage["Adjusted Close Count"], 0)
 
     def test_normalizes_symbols_and_uses_last_price_when_close_is_null(self) -> None:
         market_data = pl.DataFrame(
