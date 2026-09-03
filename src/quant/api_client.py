@@ -163,7 +163,7 @@ class ApiClient:
             not isinstance(payload, dict)
             or not {"data", "meta", "warnings"}.issubset(payload)
             or not isinstance(payload["meta"], dict)
-            or payload["meta"].get("apiVersion") != "v1"
+            or payload["meta"].get("apiVersion") != "alpha"
             or not isinstance(payload["meta"].get("generatedAt"), str)
             or not isinstance(payload["meta"].get("freshness"), dict)
             or payload["meta"]["freshness"].get("status")
@@ -178,7 +178,7 @@ class ApiClient:
                 for warning in payload["warnings"]
             )
         ):
-            raise ApiProtocolError("API returned an invalid v1 envelope")
+            raise ApiProtocolError("API returned an invalid alpha envelope")
         return payload
 
 

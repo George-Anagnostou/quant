@@ -36,7 +36,7 @@ class Freshness(BaseModel):
 
 
 class ApiMeta(BaseModel):
-    apiVersion: Literal["v1"] = "v1"
+    apiVersion: Literal["alpha"] = "alpha"
     generatedAt: str
     asOf: str | None = None
     retrievedAt: str | None = None
@@ -382,9 +382,9 @@ def get_service() -> DashboardService:
 Service = Annotated[DashboardService, Depends(get_service)]
 
 app = FastAPI(
-    title="Quant Financial Data API",
+    title="Quant Alpha Financial Data API",
     summary="Stored, cleaned, and prepared financial data for automation clients",
-    version="1.0.0",
+    version="alpha",
     docs_url="/docs",
     openapi_url="/openapi.json",
     redirect_slashes=False,
@@ -421,7 +421,7 @@ async def http_error_handler(
 
 @app.exception_handler(sqlite3.Error)
 async def storage_error_handler(request: Request, error: sqlite3.Error) -> JSONResponse:
-    logger.error("V1 storage request failed", exc_info=error)
+    logger.error("Alpha API storage request failed", exc_info=error)
     return JSONResponse(
         status_code=503,
         content=ApiErrorResponse(
@@ -435,7 +435,7 @@ async def storage_error_handler(request: Request, error: sqlite3.Error) -> JSONR
 
 @app.exception_handler(Exception)
 async def internal_error_handler(request: Request, error: Exception) -> JSONResponse:
-    logger.error("V1 request failed", exc_info=error)
+    logger.error("Alpha API request failed", exc_info=error)
     return JSONResponse(
         status_code=500,
         content=ApiErrorResponse(
@@ -463,7 +463,7 @@ async def validation_error_handler(
 
 
 @router.get("/health", response_model=ApiEnvelope[HealthData])
-def health_v1() -> ApiEnvelope[HealthData]:
+def health_alpha() -> ApiEnvelope[HealthData]:
     return _envelope({"status": "ok"})
 
 
@@ -472,7 +472,7 @@ def health_v1() -> ApiEnvelope[HealthData]:
     response_model=ApiEnvelope[DataStatusData],
     responses=VALIDATION_RESPONSES,
 )
-def data_status_v1(service: Service, symbols: str | None = None) -> ApiEnvelope:
+def data_status_alpha(service: Service, symbols: str | None = None) -> ApiEnvelope:
     parsed = _parse_symbols(symbols, required=False, maximum=100)
     data = (
         _execute(lambda: service.data_status(parsed))
@@ -494,7 +494,7 @@ def data_status_v1(service: Service, symbols: str | None = None) -> ApiEnvelope:
     response_model=ApiEnvelope[SecuritiesData],
     responses=VALIDATION_RESPONSES,
 )
-def securities_v1(
+def securities_alpha(
     service: Service,
     query: str = Query(..., min_length=1, max_length=100),
     limit: int = Query(10, ge=1, le=50),
@@ -517,7 +517,7 @@ def securities_v1(
     response_model=ApiEnvelope[QuotesData],
     responses=DATA_RESPONSES,
 )
-def quotes_v1(service: Service, symbols: str) -> ApiEnvelope:
+def quotes_alpha(service: Service, symbols: str) -> ApiEnvelope:
     parsed = _parse_symbols(symbols, maximum=20)
     result = (
         _execute(lambda: service.quotes(parsed, refresh=False, fetch_missing=False))
@@ -583,7 +583,7 @@ def quotes_v1(service: Service, symbols: str) -> ApiEnvelope:
     response_model=ApiEnvelope[BarsData],
     responses=DATA_RESPONSES,
 )
-def bars_v1(
+def bars_alpha(
     symbol: str,
     service: Service,
     start: date | None = None,
@@ -622,7 +622,7 @@ def bars_v1(
     response_model=ApiEnvelope[TechnicalsData],
     responses=DATA_RESPONSES,
 )
-def technicals_v1(
+def technicals_alpha(
     symbol: str,
     service: Service,
     windows: str = "20,50,200",
@@ -673,7 +673,7 @@ def technicals_v1(
     response_model=ApiEnvelope[RiskData],
     responses=DATA_RESPONSES,
 )
-def risk_v1(
+def risk_alpha(
     service: Service,
     symbols: str,
     period: str = Query("1y", pattern="^(1mo|3mo|6mo|1y|2y|5y)$"),
@@ -711,7 +711,7 @@ def risk_v1(
     response_model=ApiEnvelope[ScreenerData],
     responses=DATA_RESPONSES,
 )
-def screener_v1(
+def screener_alpha(
     service: Service,
     symbols: str | None = None,
     period: str = Query("1y", pattern="^(1mo|3mo|6mo|1y|2y|5y)$"),
@@ -754,7 +754,7 @@ def screener_v1(
 
 
 @router.get("/watchlist", response_model=ApiEnvelope[WatchlistData])
-def watchlist_v1(service: Service) -> ApiEnvelope:
+def watchlist_alpha(service: Service) -> ApiEnvelope:
     symbols = (
         _execute(service.watchlist) if _user_database_ready(service) else []
     )
@@ -762,7 +762,7 @@ def watchlist_v1(service: Service) -> ApiEnvelope:
 
 
 @router.get("/portfolio", response_model=ApiEnvelope[PortfolioData])
-def portfolio_v1(service: Service) -> ApiEnvelope:
+def portfolio_alpha(service: Service) -> ApiEnvelope:
     result = (
         _execute(lambda: service.holdings(refresh=False, fetch_missing=False))
         if _user_database_ready(service)
@@ -872,7 +872,7 @@ def portfolio_v1(service: Service) -> ApiEnvelope:
     response_model=ApiEnvelope[PortfolioRiskData],
     responses=DATA_RESPONSES,
 )
-def portfolio_risk_v1(
+def portfolio_risk_alpha(
     service: Service,
     period: str = Query("1y", pattern="^(1mo|3mo|6mo|1y|2y|5y)$"),
     benchmark: str = "SPY",
@@ -1147,3 +1147,8 @@ def _empty_holdings() -> dict:
 
 
 app.include_router(router)
+
+
+def configure_service(service: DashboardService) -> None:
+    global _service
+    _service = service

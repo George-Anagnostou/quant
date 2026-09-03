@@ -5,14 +5,14 @@
 - Use Python 3.14 through `uv`; install/sync with `uv sync`.
 - Run all tests with `PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s tests`.
 - Run one test with `PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest tests.test_market_data.LatestMarketDataTests.test_downloads_all_symbols_in_one_batch`.
-- `uv run quant index` reads S&P 500 bars from `data/quant.db`; if absent, it downloads data and prints roughly 500 rows. Add `--refresh` for Wikipedia/Yahoo requests or `--database PATH` for an isolated database.
-- Market analysis requires explicit choices: `uv run quant market AAPL MSFT --windows 5 20 --price adjusted`; replace tickers with `--index` for the stored S&P 500 universe.
-- `uv run quant-dashboard` serves the FastAPI dashboard at `http://127.0.0.1:8001`; routes under `/api/*` must delegate portfolio and indicator work to shared services rather than recalculate it.
+- `uv run quant serve` performs startup synchronization and serves the webpage and API at `http://127.0.0.1:8001`; add `--no-sync` for tests or offline use and `--database PATH` for an isolated database.
+- `uv run quant query ...` is the machine-readable `/api/alpha` client. It must not read SQLite, call providers, or recalculate financial results locally.
+- `uv run quant data status` queries stored coverage through the running API. Provider synchronization belongs to server startup, not API read requests.
 - No lint, formatter, or typecheck command is configured; do not claim those checks ran.
 
 ## Boundaries
 
-- The `quant` console script resolves to `main()` in `src/quant/cli.py`; `src/quant/__init__.py` has no CLI logic.
+- The sole `quant` console script resolves to `main()` in `src/quant/cli.py`; `src/quant/__init__.py` has no CLI logic.
 - `src/quant/market_data.py` owns constituent discovery, Yahoo batching, symbol normalization (`BRK.B` -> `BRK-B`), and conversion to Polars.
 - `src/quant/database.py` owns SQLite connections and fresh-schema initialization. `src/quant/market_store.py` owns security, universe, and provider-separated daily-bar persistence and returns Polars frames.
 - `src/quant/analysis.py` contains pure Polars calculations, including return, risk, correlation, attribution, and EOD screener math. `src/quant/portfolio.py` owns stored-first portfolio quote resolution and shared current-position analysis.

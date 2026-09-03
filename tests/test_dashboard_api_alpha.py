@@ -9,18 +9,18 @@ from unittest.mock import Mock, patch
 
 import polars as pl
 
-from quant.dashboard import api_v1
+from quant.dashboard import api_alpha
 from quant.dashboard import server
 from quant.dashboard.services import DashboardService
 from quant.market_store import MarketDataRepository
 from quant.user_data import UserDataRepository
 
 
-class DashboardApiV1Tests(unittest.TestCase):
+class DashboardApiAlphaTests(unittest.TestCase):
     def test_exposes_an_isolated_typed_openapi_contract(self) -> None:
-        schema = api_v1.app.openapi()
+        schema = api_alpha.app.openapi()
 
-        self.assertEqual(schema["info"]["version"], "1.0.0")
+        self.assertEqual(schema["info"]["version"], "alpha")
         self.assertEqual(
             set(schema["paths"]),
             {
@@ -47,18 +47,18 @@ class DashboardApiV1Tests(unittest.TestCase):
         mount = next(
             route
             for route in server.app.routes
-            if getattr(route, "path", None) == "/api/v1"
+            if getattr(route, "path", None) == "/api/alpha"
         )
-        self.assertIs(mount.app, api_v1.app)
+        self.assertIs(mount.app, api_alpha.app)
 
-    def test_mounted_health_and_validation_error_use_v1_wire_contract(self) -> None:
-        status, health = _asgi_get(server.app, "/api/v1/health")
+    def test_mounted_health_and_validation_error_use_alpha_wire_contract(self) -> None:
+        status, health = _asgi_get(server.app, "/api/alpha/health")
         invalid_status, invalid = _asgi_get(
-            server.app, "/api/v1/securities/AAPL/bars", "limit=0"
+            server.app, "/api/alpha/securities/AAPL/bars", "limit=0"
         )
 
         self.assertEqual(status, 200)
-        self.assertEqual(health["meta"]["apiVersion"], "v1")
+        self.assertEqual(health["meta"]["apiVersion"], "alpha")
         self.assertEqual(invalid_status, 422)
         self.assertEqual(invalid["detail"]["code"], "invalid_request")
 
@@ -75,19 +75,19 @@ class DashboardApiV1Tests(unittest.TestCase):
             ("/market/screener", "symbols="),
             ("/market/risk", "symbols=SPY"),
         ]
-        with patch.object(api_v1, "_market_database_ready") as ready:
+        with patch.object(api_alpha, "_market_database_ready") as ready:
             for path, query in cases:
                 with self.subTest(path=path, query=query):
-                    status, body = _asgi_get(server.app, "/api/v1" + path, query)
+                    status, body = _asgi_get(server.app, "/api/alpha" + path, query)
                     self.assertEqual(status, 422)
                     self.assertEqual(body["detail"]["code"], "invalid_request")
             ready.assert_not_called()
 
     def test_routing_errors_have_structured_codes_and_do_not_redirect(self) -> None:
         for path, method, expected, code in [
-            ("/api/v1/unknown", "GET", 404, "not_found"),
-            ("/api/v1/health/", "GET", 404, "not_found"),
-            ("/api/v1/health", "POST", 405, "method_not_allowed"),
+            ("/api/alpha/unknown", "GET", 404, "not_found"),
+            ("/api/alpha/health/", "GET", 404, "not_found"),
+            ("/api/alpha/health", "POST", 405, "method_not_allowed"),
         ]:
             with self.subTest(path=path, method=method):
                 status, body = _asgi_get(server.app, path, method=method)
@@ -95,16 +95,16 @@ class DashboardApiV1Tests(unittest.TestCase):
                 self.assertEqual(body["detail"]["code"], code)
 
     def test_storage_errors_are_structured_and_do_not_leak_details(self) -> None:
-        with patch.object(api_v1._service, "market_database_ready", side_effect=
+        with patch.object(api_alpha._service, "market_database_ready", side_effect=
                           sqlite3.OperationalError("private database path")):
-            with self.assertLogs(api_v1.logger, level="ERROR"):
-                status, body = _asgi_get(server.app, "/api/v1/data/status")
+            with self.assertLogs(api_alpha.logger, level="ERROR"):
+                status, body = _asgi_get(server.app, "/api/alpha/data/status")
         self.assertEqual(status, 503)
         self.assertEqual(body["detail"]["code"], "storage_unavailable")
         self.assertNotIn("private", json.dumps(body))
 
     @patch("quant.quotes.get_market_history", side_effect=AssertionError("network"))
-    def test_every_v1_read_leaves_prepared_storage_unchanged(self, provider) -> None:
+    def test_every_alpha_read_leaves_prepared_storage_unchanged(self, provider) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "quant.db"
             market = MarketDataRepository(path)
@@ -134,11 +134,11 @@ class DashboardApiV1Tests(unittest.TestCase):
                 ("watchlist", "", 200), ("portfolio", "", 200),
                 ("portfolio/risk", "", 409),
             ]
-            with patch.object(api_v1, "_service", service):
+            with patch.object(api_alpha, "_service", service):
                 with patch("quant.database.initialize_database", side_effect=AssertionError("write")):
                     for path_suffix, query, expected in cases:
                         with self.subTest(path=path_suffix):
-                            status, _ = _asgi_get(server.app, "/api/v1/" + path_suffix, query)
+                            status, _ = _asgi_get(server.app, "/api/alpha/" + path_suffix, query)
                             self.assertEqual(status, expected)
             self.assertEqual(path.read_bytes(), before)
             provider.assert_not_called()
@@ -160,10 +160,10 @@ class DashboardApiV1Tests(unittest.TestCase):
                 ("watchlist", "", 200), ("portfolio", "", 200),
                 ("portfolio/risk", "", 409),
             ]
-            with patch.object(api_v1, "_service", service):
+            with patch.object(api_alpha, "_service", service):
                 for suffix, query, expected in cases:
                     with self.subTest(path=suffix):
-                        status, _ = _asgi_get(server.app, "/api/v1/" + suffix, query)
+                        status, _ = _asgi_get(server.app, "/api/alpha/" + suffix, query)
                         self.assertEqual(status, expected)
             self.assertFalse(path.parent.exists())
 
@@ -188,8 +188,8 @@ class DashboardApiV1Tests(unittest.TestCase):
             ]
         }
 
-        with patch("quant.dashboard.api_v1._market_database_ready", return_value=True):
-            result = api_v1.quotes_v1(service, "aapl,missing")
+        with patch("quant.dashboard.api_alpha._market_database_ready", return_value=True):
+            result = api_alpha.quotes_alpha(service, "aapl,missing")
 
         service.quotes.assert_called_once_with(
             ["AAPL", "MISSING"], refresh=False, fetch_missing=False
@@ -197,18 +197,18 @@ class DashboardApiV1Tests(unittest.TestCase):
         self.assertEqual(result.data["quotes"][0]["changeReturn"], 0.25)
         self.assertEqual(result.data["missingSymbols"], ["MISSING"])
         self.assertIn("partial_data", [warning.code for warning in result.warnings])
-        api_v1.ApiEnvelope[api_v1.QuotesData].model_validate(result.model_dump())
+        api_alpha.ApiEnvelope[api_alpha.QuotesData].model_validate(result.model_dump())
 
     @patch("quant.quotes.get_market_history")
-    def test_v1_quote_reads_never_call_the_provider(self, get_market_history) -> None:
+    def test_alpha_quote_reads_never_call_the_provider(self, get_market_history) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "quant.db"
             service = DashboardService(
                 UserDataRepository(path), MarketDataRepository(path)
             )
 
-            with self.assertRaises(api_v1.HTTPException) as error:
-                api_v1.quotes_v1(service, "MISSING")
+            with self.assertRaises(api_alpha.HTTPException) as error:
+                api_alpha.quotes_alpha(service, "MISSING")
 
             self.assertFalse(path.exists())
 
@@ -235,13 +235,13 @@ class DashboardApiV1Tests(unittest.TestCase):
             )
             service = DashboardService(UserDataRepository(path), repository)
 
-            result = api_v1.bars_v1("aapl", service, limit=500)
+            result = api_alpha.bars_alpha("aapl", service, limit=500)
 
         bar = result.data["bars"][0]
         self.assertEqual(bar["provider"], "yahoo")
         self.assertIsNotNone(bar["retrievedAt"])
         self.assertEqual(result.meta.priceBasis, "raw")
-        api_v1.ApiEnvelope[api_v1.BarsData].model_validate(result.model_dump())
+        api_alpha.ApiEnvelope[api_alpha.BarsData].model_validate(result.model_dump())
 
     def test_derived_analytics_expose_storage_retrieval_time(self) -> None:
         with TemporaryDirectory() as directory:
@@ -262,7 +262,7 @@ class DashboardApiV1Tests(unittest.TestCase):
             )
             service = DashboardService(UserDataRepository(path), repository)
 
-            result = api_v1.technicals_v1(
+            result = api_alpha.technicals_alpha(
                 "aapl", service, windows="2", priceBasis="adjustedClose"
             )
 
@@ -275,9 +275,9 @@ class DashboardApiV1Tests(unittest.TestCase):
                 UserDataRepository(path), MarketDataRepository(path)
             )
 
-            result = api_v1.portfolio_v1(service)
+            result = api_alpha.portfolio_alpha(service)
 
-        validated = api_v1.ApiEnvelope[api_v1.PortfolioData].model_validate(
+        validated = api_alpha.ApiEnvelope[api_alpha.PortfolioData].model_validate(
             result.model_dump()
         )
         self.assertEqual(validated.data.summary.positionCount, 0)

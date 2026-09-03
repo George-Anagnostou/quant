@@ -205,32 +205,32 @@ accepting user identity in request bodies.
 
 ## API Contract
 
-The initial stored-only read contract and machine-readable `quant-api` client
+The initial stored-only read contract and machine-readable `quant query` client
 are implemented. The next contract increments are specified in
 [`API_EXPANSION_PLAN.md`](API_EXPANSION_PLAN.md).
 
-Introduce a versioned `/api/v1` contract before encouraging custom consumers.
+Evolve the versioned `/api/alpha` contract before encouraging custom consumers.
 Core resources include:
 
 ```text
-GET    /api/v1/me
-GET    /api/v1/watchlist
-POST   /api/v1/watchlist
-DELETE /api/v1/watchlist/{symbol}
+GET    /api/alpha/me
+GET    /api/alpha/watchlist
+POST   /api/alpha/watchlist
+DELETE /api/alpha/watchlist/{symbol}
 
-GET    /api/v1/portfolio/positions
-POST   /api/v1/portfolio/positions
-DELETE /api/v1/portfolio/positions/{id}
-GET    /api/v1/portfolio/summary
-GET    /api/v1/portfolio/history
+GET    /api/alpha/portfolio/positions
+POST   /api/alpha/portfolio/positions
+DELETE /api/alpha/portfolio/positions/{id}
+GET    /api/alpha/portfolio/summary
+GET    /api/alpha/portfolio/history
 
-GET    /api/v1/securities/{symbol}
-GET    /api/v1/securities/{symbol}/bars
-GET    /api/v1/securities/{symbol}/technicals
+GET    /api/alpha/securities/{symbol}
+GET    /api/alpha/securities/{symbol}/bars
+GET    /api/alpha/securities/{symbol}/technicals
 
-GET    /api/v1/market/overview
-GET    /api/v1/market/breadth
-GET    /api/v1/data/status
+GET    /api/alpha/market/overview
+GET    /api/alpha/market/breadth
+GET    /api/alpha/data/status
 ```
 
 Responses identify their observation date, generation time, provider, price
@@ -273,14 +273,14 @@ that bridge with explicit synchronization and validation.
 4. Add validation, audit records, and resumable sync requests.
 5. Add `quant data sync`, `quant data status`, and `quant data check`.
 
-### Phase 4: API v1 (Read Contract Implemented)
+### Phase 4: API alpha (Read Contract Implemented)
 
 1. Add Clerk authentication to the existing user-scoped repositories.
 2. Extend the typed, versioned endpoints using the API expansion plan.
 3. Continue serving daily history and technical analysis only from SQLite.
 4. Preserve freshness, provenance, warnings, and deterministic errors.
-5. Convert the web UI to the v1 contract; keep `quant-api` as the automation
-   client and reserve `quant` for local operator workflows.
+5. Convert the web UI to the alpha contract; keep `quant query` as the automation
+   client and `quant data` as the local operator surface.
 
 ### Phase 5: Background Operation
 

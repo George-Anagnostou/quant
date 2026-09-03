@@ -2,7 +2,7 @@
 
 ## Outcome
 
-Expand `/api/v1` into a predictable financial-data interface that an agent can
+Expand `/api/alpha` into a predictable financial-data interface that an agent can
 discover, query, validate, and compose without reading implementation code.
 The API remains local, stored-first, typed, and side-effect-free for reads.
 Operator ingestion stays outside request-time analytics.
@@ -26,7 +26,7 @@ Every endpoint must follow these rules before new resource coverage is added:
 - OpenAPI models, operation IDs, parameter descriptions, examples, null
   semantics, warning codes, and error responses are part of the contract.
 - Add contract tests for empty, partial, stale, malformed, oversized, and
-  unavailable-data cases before exposing each endpoint through `quant-api`.
+  unavailable-data cases before exposing each endpoint through `quant query`.
 
 ## Delivery Sequence
 
@@ -141,13 +141,13 @@ errors. They are excluded from stored-only batch analytics.
 Mirror API resources without inventing CLI-only calculations:
 
 ```text
-quant-api capabilities
-quant-api calendar sessions XNYS --start ... --end ...
-quant-api universe members sp500 --as-of ...
-quant-api gaps --universe sp500 --reason provider_omission
-quant-api bars AAPL MSFT --start ... --fields date,adjustedClose
-quant-api technical AAPL --indicator bollinger:window=20,stddev=2 --tail 5
-quant-api correlations AAPL MSFT NVDA --period 1y --format matrix
+quant query capabilities
+quant query calendar sessions XNYS --start ... --end ...
+quant query universe members sp500 --as-of ...
+quant query gaps --universe sp500 --reason provider_omission
+quant query bars AAPL MSFT --start ... --fields date,adjustedClose
+quant query technical AAPL --indicator bollinger:window=20,stddev=2 --tail 5
+quant query correlations AAPL MSFT NVDA --period 1y --format matrix
 ```
 
 Compact JSON remains the default. `--pretty` is presentation-only. Future
@@ -174,7 +174,7 @@ financial semantics. Exit codes remain stable across commands.
 3. Add cursor/page primitives shared by bars, issues, and universe history.
 4. Add multi-symbol bars with field projection and strict byte/row limits.
 5. Add an indicator registry and Bollinger Bands with `tail` support.
-6. Expose each resource through `quant-api` and add end-to-end contract tests.
+6. Expose each resource through `quant query` and add end-to-end contract tests.
 
 This slice directly removes the ad hoc SQL and `jq` calculations currently
 needed for coverage audits, rolling volume analysis, and Bollinger Bands.

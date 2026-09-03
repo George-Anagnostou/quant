@@ -4,7 +4,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from unittest.mock import patch
 
-from quant.api_cli import main
+from quant.query_cli import main
 from quant.api_client import (
     ApiHttpError, ApiProtocolError, ApiTimeoutError, ApiTransportError,
 )
@@ -13,7 +13,7 @@ from quant.api_client import (
 RESPONSE = {
     "data": {"quotes": []},
     "meta": {
-        "apiVersion": "v1",
+        "apiVersion": "alpha",
         "generatedAt": "2026-09-03T12:00:00Z",
         "freshness": {
             "status": "unknown",
@@ -25,19 +25,19 @@ RESPONSE = {
 }
 
 
-class ApiCliTests(unittest.TestCase):
-    @patch("quant.api_cli.ApiClient")
+class QueryCliTests(unittest.TestCase):
+    @patch("quant.query_cli.ApiClient")
     def test_global_options_work_before_or_after_command(self, client_type) -> None:
         client_type.return_value.request.return_value = RESPONSE
-        options = ["--base-url", "http://localhost:9000/api/v1", "--timeout", "2", "--pretty"]
+        options = ["--base-url", "http://localhost:9000/api/alpha", "--timeout", "2", "--pretty"]
         for argv in ([*options, "health"], ["health", *options]):
             with self.subTest(argv=argv), redirect_stdout(StringIO()) as output:
                 main(argv)
                 self.assertIn("\n  ", output.getvalue())
                 self.assertEqual(client_type.call_args.args[0].timeout, 2)
-                self.assertEqual(client_type.call_args.args[0].base_url, "http://localhost:9000/api/v1")
+                self.assertEqual(client_type.call_args.args[0].base_url, "http://localhost:9000/api/alpha")
 
-    @patch("quant.api_cli.ApiClient")
+    @patch("quant.query_cli.ApiClient")
     def test_json_errors_and_exit_codes_leave_stdout_empty(self, client_type) -> None:
         for failure, expected, code in [
             (ApiTransportError("disconnected"), 3, "transport_error"),
@@ -56,7 +56,7 @@ class ApiCliTests(unittest.TestCase):
                 self.assertEqual(output.getvalue(), "")
                 self.assertEqual(json.loads(errors.getvalue())["error"]["code"], code)
 
-    @patch("quant.api_cli.ApiClient")
+    @patch("quant.query_cli.ApiClient")
     def test_usage_errors_do_not_contact_server(self, client_type) -> None:
         invalid_requests = [
             [], ["no-such-command"], ["--time", "1", "health"], ["quotes"],
@@ -77,15 +77,15 @@ class ApiCliTests(unittest.TestCase):
                 self.assertEqual(json.loads(errors.getvalue())["error"]["code"], "invalid_usage")
         client_type.assert_not_called()
 
-    @patch("quant.api_cli.ApiClient")
+    @patch("quant.query_cli.ApiClient")
     def test_closed_output_pipe_exits_without_traceback(self, client_type) -> None:
         client_type.return_value.request.return_value = RESPONSE
-        with patch("quant.api_cli._write_json", side_effect=BrokenPipeError):
+        with patch("quant.query_cli._write_json", side_effect=BrokenPipeError):
             with redirect_stdout(StringIO()), self.assertRaises(SystemExit) as error:
                 main(["health"])
         self.assertEqual(error.exception.code, 0)
 
-    @patch("quant.api_cli.ApiClient")
+    @patch("quant.query_cli.ApiClient")
     def test_emits_compact_json_and_exact_risk_request(self, client_type) -> None:
         client = client_type.return_value
         client.request.return_value = RESPONSE
@@ -95,7 +95,7 @@ class ApiCliTests(unittest.TestCase):
             main(
                 [
                     "--base-url",
-                    "http://localhost:9000/api/v1",
+                    "http://localhost:9000/api/alpha",
                     "risk",
                     "aapl",
                     "MSFT",
@@ -114,7 +114,7 @@ class ApiCliTests(unittest.TestCase):
             query={"symbols": "AAPL,MSFT", "period": "6mo", "benchmark": "QQQ"},
         )
 
-    @patch("quant.api_cli.ApiClient")
+    @patch("quant.query_cli.ApiClient")
     def test_encodes_symbol_path_and_bar_filters(self, client_type) -> None:
         client = client_type.return_value
         client.request.return_value = RESPONSE
@@ -139,7 +139,7 @@ class ApiCliTests(unittest.TestCase):
             query={"start": "2026-01-01", "end": "2026-02-01", "limit": 20},
         )
 
-    @patch("quant.api_cli.ApiClient")
+    @patch("quant.query_cli.ApiClient")
     def test_emits_structured_http_error_and_exit_code(self, client_type) -> None:
         client_type.return_value.request.side_effect = ApiHttpError(
             409, {"code": "insufficient_data", "message": "no bars"}

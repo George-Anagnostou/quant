@@ -1,3 +1,3 @@
-from quant.dashboard.server import app, run
+from quant.dashboard.server import app
 
-__all__ = ["app", "run"]
+__all__ = ["app"]

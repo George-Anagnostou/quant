@@ -2,7 +2,7 @@
 
 ## Merged Work
 
-- PR #1 (`UI v1`) originally introduced FastAPI, watchlist, holdings, stock
+- PR #1 (`UI foundation`) originally introduced FastAPI, watchlist, holdings, stock
   detail, fundamentals, analyst data, earnings, options, news, and static UI.
 - PR #2 (`Add market analysis indicators`) is present: full daily bars, shared
   quote resolution, moving averages, changes, rolling levels, and volume metrics.
@@ -27,7 +27,7 @@
 - `database.py` owns shared SQLite connections and fresh-schema initialization.
 - `market_store.py` owns securities, universes, and provider-aware daily bars.
 - `quotes.py` owns stored daily-bar resolution and temporary missing-only
-  downloads until scheduled ingestion is implemented.
+  downloads until server-startup ingestion is implemented.
 - `research.py` owns injectable provider calls, JSON-safe conversion, bounded
   TTL caching, single-flight requests, and stale fallback.
 - `dashboard/services.py` adapts shared analysis results to web response shapes.
@@ -38,7 +38,7 @@
 
 | Area | CLI / core | Web dashboard | Review question |
 | --- | --- | --- | --- |
-| Portfolio source | Reads user-scoped SQLite lots | Reads user-scoped SQLite lots | Authentication will select the user in API v1 |
+| Portfolio source | API-backed client | Reads user-scoped SQLite lots | Authentication will select the user in the stable API |
 | Position detail | Preserves individual lots internally; terminal output remains position-oriented | Preserves account, asset class, sector, acquired date, and lot IDs | Should CLI expose lot and allocation views? |
 | Market prices | Provider-separated SQLite daily bars | Same EOD bars for watchlists, holdings, and indicators | Scheduled freshness belongs to Phase 3 |
 | History | Daily analysis history through Polars | Daily chart history through the same service | Unified in this change |

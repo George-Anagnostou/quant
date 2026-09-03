@@ -19,7 +19,7 @@ from quant.api_client import (
 )
 
 
-DEFAULT_BASE_URL = "http://127.0.0.1:8001/api/v1"
+DEFAULT_BASE_URL = "http://127.0.0.1:8001/api/alpha"
 PERIODS = ("1mo", "3mo", "6mo", "1y", "2y", "5y")
 SYMBOL_PATTERN = re.compile(r"^[A-Z0-9^][A-Z0-9.^=_-]{0,31}$")
 
@@ -78,8 +78,8 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = JsonArgumentParser(
-        prog="quant-api",
-        description="Machine-readable client for the Quant API v1",
+        prog="quant query",
+        description="Machine-readable client for the Quant alpha API",
     )
     _add_global_options(parser)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -158,7 +158,7 @@ def _add_global_options(
             if suppress_defaults
             else os.environ.get("QUANT_API_BASE_URL", DEFAULT_BASE_URL)
         ),
-        help="Quant API v1 base URL",
+        help="Quant alpha API base URL",
     )
     parser.add_argument(
         "--timeout",
