@@ -107,6 +107,7 @@ class SecuritiesData(BaseModel):
 
 
 class QuoteData(BaseModel):
+    date: str
     symbol: str
     name: str
     price: float
@@ -115,7 +116,6 @@ class QuoteData(BaseModel):
     changeReturn: float | None
     volume: int | None
     currency: Literal["USD"]
-    asOf: str
     provider: str
     retrievedAt: str
 
@@ -170,8 +170,8 @@ class TechnicalsData(BaseModel):
 
 
 class RiskMetric(BaseModel):
+    date: str
     symbol: str
-    latestDate: str
     oneMonthReturn: float | None = None
     ytdReturn: float | None = None
     twelveOneMomentum: float | None = None
@@ -236,6 +236,7 @@ class PortfolioSummary(BaseModel):
 
 
 class PositionData(BaseModel):
+    date: str | None
     id: str
     symbol: str
     quantity: float
@@ -246,7 +247,6 @@ class PositionData(BaseModel):
     gainLoss: float | None
     gainReturn: float | None
     weight: float | None
-    quoteAsOf: str | None
     marketDataAvailable: bool
     account: str | None
     assetClass: str | None
@@ -532,6 +532,7 @@ def quotes_alpha(service: Service, symbols: str) -> ApiEnvelope:
             continue
         quotes.append(
             {
+                "date": item["asOf"],
                 "symbol": item["symbol"],
                 "name": item["name"],
                 "price": item["price"],
@@ -544,7 +545,6 @@ def quotes_alpha(service: Service, symbols: str) -> ApiEnvelope:
                 ),
                 "volume": item["volume"],
                 "currency": item["currency"],
-                "asOf": item["asOf"],
                 "provider": item["provider"],
                 "retrievedAt": item["retrievedAt"],
             }
@@ -560,7 +560,7 @@ def quotes_alpha(service: Service, symbols: str) -> ApiEnvelope:
         )
     return _envelope(
         {"quotes": quotes, "missingSymbols": missing},
-        as_of=min(item["asOf"] for item in quotes),
+        as_of=min(item["date"] for item in quotes),
         retrieved_at=min(item["retrievedAt"] for item in quotes),
         provider="yahoo",
         price_basis="close",
@@ -695,7 +695,9 @@ def risk_alpha(
             fetch_missing=False,
         )
     )
-    as_of = min(item["latestDate"] for item in data["metrics"])
+    metrics = [_dated_metric(item) for item in data["metrics"]]
+    data = {**data, "metrics": metrics}
+    as_of = min(item["date"] for item in metrics)
     return _envelope(
         data,
         as_of=as_of,
@@ -740,9 +742,11 @@ def screener_alpha(
         ),
         insufficient=True,
     )
+    rows = [_dated_metric(item) for item in data["rows"]]
+    data = {**data, "rows": rows}
     return _envelope(
         data,
-        as_of=min(item["latestDate"] for item in data["rows"]),
+        as_of=min(item["date"] for item in rows),
         retrieved_at=_retrieved_at(
             service,
             [*[item["symbol"] for item in data["rows"]], benchmark],
@@ -772,6 +776,7 @@ def portfolio_alpha(service: Service) -> ApiEnvelope:
     for item in result["holdings"]:
         positions.append(
             {
+                "date": item["asOf"],
                 "id": item["id"],
                 "symbol": item["symbol"],
                 "quantity": item["shares"],
@@ -790,7 +795,6 @@ def portfolio_alpha(service: Service) -> ApiEnvelope:
                     if item["weightPercent"] is not None
                     else None
                 ),
-                "quoteAsOf": item["asOf"],
                 "marketDataAvailable": item["marketDataAvailable"],
                 "account": item["account"],
                 "assetClass": item["assetClass"],
@@ -833,9 +837,7 @@ def portfolio_alpha(service: Service) -> ApiEnvelope:
         "allocations": allocations,
         "unpricedSymbols": result["unpricedSymbols"],
     }
-    as_of_values = [
-        item["quoteAsOf"] for item in positions if item["quoteAsOf"]
-    ]
+    as_of_values = [item["date"] for item in positions if item["date"]]
     return _envelope(
         data,
         as_of=min(as_of_values) if as_of_values else None,
@@ -930,6 +932,12 @@ def _execute(operation: Callable[[], Any], *, insufficient: bool = False) -> Any
             status_code=409,
             detail={"code": "insufficient_data", "message": str(error)},
         ) from error
+
+
+def _dated_metric(item: dict[str, Any]) -> dict[str, Any]:
+    dated = {**item, "date": item["latestDate"]}
+    dated.pop("latestDate")
+    return dated
 
 
 def _retrieved_at(service: DashboardService, symbols: list[str]) -> str | None:

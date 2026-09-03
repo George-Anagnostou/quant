@@ -25,6 +25,8 @@ Every endpoint must follow these rules before new resource coverage is added:
   endpoints are explicitly labeled as transient and report cache/provider state.
 - OpenAPI models, operation IDs, parameter descriptions, examples, null
   semantics, warning codes, and error responses are part of the contract.
+- Every daily observation uses an ISO `date` field; clients never infer dates
+  from array position or translate endpoint-specific aliases.
 - Add contract tests for empty, partial, stale, malformed, oversized, and
   unavailable-data cases before exposing each endpoint through `quant query`.
 

@@ -116,6 +116,11 @@ Global options work before or after the command. Use `--pretty` for indented
 output. Success JSON is written to stdout; errors are written to stderr as
 `{"ok":false,"error":...}` and use these stable exit codes:
 
+Every daily observation carries its own ISO `date` field. This includes quotes,
+bars, technical points, risk and screener rows, priced portfolio positions, and
+portfolio-history points, so clients do not infer chronology from array order
+or translate endpoint-specific date names.
+
 | Code | Meaning |
 | ---: | --- |
 | 2 | Invalid command or local configuration |

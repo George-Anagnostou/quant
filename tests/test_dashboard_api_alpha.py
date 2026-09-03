@@ -17,6 +17,31 @@ from quant.user_data import UserDataRepository
 
 
 class DashboardApiAlphaTests(unittest.TestCase):
+    def test_daily_observation_models_use_one_date_field(self) -> None:
+        models = (
+            api_alpha.QuoteData,
+            api_alpha.BarData,
+            api_alpha.TechnicalPoint,
+            api_alpha.RiskMetric,
+            api_alpha.ScreenerRow,
+            api_alpha.PositionData,
+            api_alpha.PortfolioHistoryPoint,
+        )
+
+        for model in models:
+            with self.subTest(model=model.__name__):
+                self.assertIn("date", model.model_fields)
+                self.assertNotIn("asOf", model.model_fields)
+                self.assertNotIn("latestDate", model.model_fields)
+                self.assertNotIn("quoteAsOf", model.model_fields)
+
+        self.assertEqual(
+            api_alpha._dated_metric(
+                {"symbol": "AAPL", "latestDate": "2026-08-21"}
+            ),
+            {"symbol": "AAPL", "date": "2026-08-21"},
+        )
+
     def test_exposes_an_isolated_typed_openapi_contract(self) -> None:
         schema = api_alpha.app.openapi()
 
@@ -195,6 +220,8 @@ class DashboardApiAlphaTests(unittest.TestCase):
             ["AAPL", "MISSING"], refresh=False, fetch_missing=False
         )
         self.assertEqual(result.data["quotes"][0]["changeReturn"], 0.25)
+        self.assertEqual(result.data["quotes"][0]["date"], "2026-08-21")
+        self.assertNotIn("asOf", result.data["quotes"][0])
         self.assertEqual(result.data["missingSymbols"], ["MISSING"])
         self.assertIn("partial_data", [warning.code for warning in result.warnings])
         api_alpha.ApiEnvelope[api_alpha.QuotesData].model_validate(result.model_dump())
@@ -238,6 +265,7 @@ class DashboardApiAlphaTests(unittest.TestCase):
             result = api_alpha.bars_alpha("aapl", service, limit=500)
 
         bar = result.data["bars"][0]
+        self.assertEqual(bar["date"], "2026-08-21")
         self.assertEqual(bar["provider"], "yahoo")
         self.assertIsNotNone(bar["retrievedAt"])
         self.assertEqual(result.meta.priceBasis, "raw")
@@ -267,6 +295,7 @@ class DashboardApiAlphaTests(unittest.TestCase):
             )
 
         self.assertIsNotNone(result.meta.retrievedAt)
+        self.assertEqual(result.data["points"][-1]["date"], "2026-08-21")
 
     def test_empty_portfolio_matches_its_documented_contract(self) -> None:
         with TemporaryDirectory() as directory:
