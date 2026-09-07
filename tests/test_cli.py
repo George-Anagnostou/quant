@@ -30,7 +30,7 @@ class CliTests(unittest.TestCase):
             port=8001,
             database=Path("market.db"),
             sync_enabled=True,
-            horizon=date(2025, 1, 1),
+            horizon=None,
             batch_size=50,
         )
 

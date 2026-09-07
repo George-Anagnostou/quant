@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from pathlib import Path
 
 
 DEFAULT_DATABASE_PATH = Path("data/quant.db")
 LOCAL_ADMIN_USER_ID = "local-admin"
 MAX_WATCHLIST_SYMBOLS = 20
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _INITIALIZATION_LOCK = threading.Lock()
 
 
@@ -21,29 +22,86 @@ def initialize_database(path: Path = DEFAULT_DATABASE_PATH) -> None:
             version = _schema_version(connection)
             if version == SCHEMA_VERSION:
                 return
-            if version != 0:
+            if version not in {0, 1}:
                 raise RuntimeError(
-                    f"Database schema {version} is not supported; delete {path} "
-                    "and recreate it"
+                    f"Database schema {version} is not supported by this version of Quant"
                 )
-            if _application_tables(connection):
+            if version == 0 and _application_tables(connection):
                 raise RuntimeError(
-                    f"Existing database at {path} is not supported; delete it "
-                    "and recreate it"
+                    f"Existing unversioned database at {path} is not supported; preserve it and use an explicit migration"
                 )
 
+            if version == 1:
+                backup_database(path, path.with_name(f"{path.name}.v1-{uuid.uuid4().hex}.backup"))
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("BEGIN IMMEDIATE")
             version = _schema_version(connection)
             if version == SCHEMA_VERSION:
                 return
-            if version != 0 or _application_tables(connection):
+            if version not in {0, 1} or (version == 0 and _application_tables(connection)):
                 raise RuntimeError(
-                    f"Existing database at {path} is not supported; delete it "
-                    "and recreate it"
+                    f"Database at {path} changed during initialization; preserve it and inspect its schema"
                 )
-            _create_schema(connection)
+            if version == 0:
+                _create_schema(connection)
+            _migrate_v2(connection)
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def backup_database(source: Path, destination: Path) -> Path:
+    """Create an exclusive, verified online backup; never replace an existing file."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("xb"):
+        pass
+    try:
+        with _open_connection(source, read_only=True) as original:
+            with closing(sqlite3.connect(destination)) as backup:
+                original.backup(backup)
+                if backup.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise sqlite3.DatabaseError("Backup integrity check failed")
+                if backup.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                    raise sqlite3.DatabaseError("Backup foreign key check failed")
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+    return destination
+
+
+def _migrate_v2(connection: sqlite3.Connection) -> None:
+    for statement in (
+        "ALTER TABLE securities ADD COLUMN currency TEXT",
+        "ALTER TABLE securities ADD COLUMN instrument_type TEXT",
+        "ALTER TABLE securities ADD COLUMN calendar TEXT",
+        """CREATE TABLE provider_symbols (
+            security_id TEXT NOT NULL REFERENCES securities(id), provider TEXT NOT NULL,
+            provider_symbol TEXT NOT NULL, PRIMARY KEY(security_id, provider),
+            UNIQUE(provider, provider_symbol))""",
+        """CREATE TABLE ingestion_runs (
+            id TEXT PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT,
+            status TEXT NOT NULL, universe_source TEXT NOT NULL)""",
+        """CREATE TABLE ingestion_jobs (
+            run_id TEXT NOT NULL REFERENCES ingestion_runs(id), symbol TEXT NOT NULL,
+            start_date TEXT NOT NULL, reasons TEXT NOT NULL, status TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0, saved_rows INTEGER NOT NULL DEFAULT 0,
+            error TEXT, PRIMARY KEY(run_id, symbol))""",
+        """CREATE TABLE data_issues (
+            symbol TEXT NOT NULL, code TEXT NOT NULL, session_date TEXT NOT NULL DEFAULT '',
+            first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, resolved_at TEXT,
+            detail TEXT NOT NULL, PRIMARY KEY(symbol, code, session_date))""",
+        """CREATE TABLE sync_coverage (
+            symbol TEXT PRIMARY KEY, requested_start TEXT NOT NULL,
+            checked_at TEXT NOT NULL)""",
+        """CREATE TABLE records (
+            id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+            kind TEXT NOT NULL, import_key TEXT NOT NULL, digest TEXT NOT NULL,
+            created_at TEXT NOT NULL, payload TEXT NOT NULL,
+            UNIQUE(user_id, kind, import_key))""",
+        "CREATE INDEX records_kind_user ON records(user_id, kind, created_at, id)",
+        """CREATE TABLE audit_events (
+            id INTEGER PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+            operation TEXT NOT NULL, record_id TEXT NOT NULL, created_at TEXT NOT NULL)""",
+    ):
+        connection.execute(statement)
 
 
 def is_database_initialized(path: Path = DEFAULT_DATABASE_PATH) -> bool:

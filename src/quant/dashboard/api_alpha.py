@@ -33,6 +33,8 @@ class Freshness(BaseModel):
     status: Literal["current", "stale", "unknown"]
     ageCalendarDays: int | None
     staleAfterCalendarDays: int | None
+    latestCompletedSession: str | None = None
+    missingSessions: int | None = None
 
 
 class ApiMeta(BaseModel):
@@ -43,6 +45,8 @@ class ApiMeta(BaseModel):
     provider: str | None = None
     priceBasis: str | None = None
     freshness: Freshness
+    methodologyVersion: str | None = None
+    datasetSha256: str | None = None
 
 
 Payload = TypeVar("Payload")
@@ -968,7 +972,7 @@ def _envelope(
         response_warnings.append(
             ApiWarning(
                 code="stale_data",
-                message="Latest stored observation is older than four calendar days",
+                message="Latest stored observation precedes the latest completed XNYS session",
             )
         )
     return ApiEnvelope(
@@ -990,15 +994,18 @@ def _freshness(as_of: str | None) -> Freshness:
         return Freshness(
             status="unknown", ageCalendarDays=None, staleAfterCalendarDays=None
         )
+    from quant.calendars import freshness
     age = (datetime.now(EASTERN_TIME).date() - date.fromisoformat(as_of)).days
-    if age < 0:
-        return Freshness(
-            status="unknown", ageCalendarDays=None, staleAfterCalendarDays=4
-        )
+    try:
+        state = freshness(as_of)
+    except ValueError:
+        state = {"status":"unknown","latestCompletedSession":None,"missingSessions":None}
     return Freshness(
-        status="current" if age <= 4 else "stale",
-        ageCalendarDays=age,
-        staleAfterCalendarDays=4,
+        status=state["status"],
+        ageCalendarDays=age if age >= 0 else None,
+        staleAfterCalendarDays=None,
+        latestCompletedSession=state["latestCompletedSession"],
+        missingSessions=state["missingSessions"],
     )
 
 
@@ -1160,3 +1167,7 @@ app.include_router(router)
 def configure_service(service: DashboardService) -> None:
     global _service
     _service = service
+
+
+from quant.dashboard.api_research import router as research_router
+app.include_router(research_router)

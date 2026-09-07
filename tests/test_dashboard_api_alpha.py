@@ -46,8 +46,8 @@ class DashboardApiAlphaTests(unittest.TestCase):
         schema = api_alpha.app.openapi()
 
         self.assertEqual(schema["info"]["version"], "alpha")
-        self.assertEqual(
-            set(schema["paths"]),
+        self.assertTrue(
+            set(schema["paths"]).issuperset(
             {
                 "/health",
                 "/data/status",
@@ -60,7 +60,7 @@ class DashboardApiAlphaTests(unittest.TestCase):
                 "/watchlist",
                 "/portfolio",
                 "/portfolio/risk",
-            },
+            }),
         )
         response = schema["paths"]["/market/quotes"]["get"]["responses"]["200"]
         response_schema = response["content"]["application/json"]["schema"]

@@ -145,7 +145,38 @@ def _build_parser() -> argparse.ArgumentParser:
     portfolio_risk = command("portfolio-risk", help="calculate stored portfolio risk")
     _add_risk_options(portfolio_risk)
     portfolio_risk.set_defaults(handler=_portfolio_risk)
+    for name, endpoint in (("capabilities", "capabilities"), ("quality", "data/quality"),
+                           ("gaps", "data/gaps"), ("snapshots", "portfolio/snapshots"), ("universes", "universes")):
+        child = command(name, help=f"read {endpoint}")
+        child.set_defaults(handler=lambda client, _, endpoint=endpoint: client.request("GET", endpoint))
+    request = command("request", help="call a documented alpha resource; JSON input is forwarded without financial computation")
+    request.add_argument("path")
+    request.add_argument("--method", choices=("GET", "POST"), default="GET")
+    request.add_argument("--json-file", help="JSON request file, or - for stdin")
+    request.set_defaults(handler=_request)
     return parser
+
+
+def _request(client, args):
+    from quant.api_client import _load_json
+    if args.path.startswith(("/", "http:" , "https:")) or ".." in args.path or "#" in args.path:
+        raise CliUsageError("Use a relative alpha resource path")
+    body = None
+    if args.json_file:
+        if args.method != "POST":
+            raise CliUsageError("JSON input requires POST")
+        try:
+            if args.json_file == "-":
+                raw = sys.stdin.buffer.read(8*1024*1024+1)
+            else:
+                with open(args.json_file, "rb") as stream:
+                    raw = stream.read(8*1024*1024+1)
+            if len(raw)>8*1024*1024:
+                raise ValueError("Request exceeds 8 MiB")
+            body = _load_json(raw)
+        except (OSError, ValueError) as error:
+            raise CliUsageError(str(error)) from error
+    return client.request(args.method, args.path, body=body)
 
 
 def _add_global_options(
