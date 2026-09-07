@@ -12,7 +12,7 @@ import identities; retrying identical content is safe, conflicting content fails
 | Discovery | capabilities, calendar sessions, universes/membership, breadth, factor proxies |
 | Data | status, quality, gaps, queued synchronization, durable ingestion run status, metadata |
 | Efficient reads | multi-symbol projected bars with bounded cursor pages and frozen-run selection |
-| Portfolio | snapshots, exposure/risk reviews, look-through, scenarios, ledger imports/performance |
+| Portfolio | snapshots, typed readiness checks, exposure/risk reviews, look-through, scenarios, ledger imports/performance |
 | Research | runs/replay, records, reports, SEC/evidence, financial observations, valuation, theses |
 | Evaluation | retained momentum experiments and explicit reviewer scores |
 
@@ -21,6 +21,12 @@ versioned application structures in the existing data/meta/warnings envelope.
 Input models are strict; record payloads preserve their category-specific source
 structure. Returns and weights are fractions. Request bodies are bounded to 8 MiB,
 record pages to 8 MiB, and the CLI rejects responses larger than 16 MiB.
+
+`GET /portfolio/snapshots/{id}/readiness` accepts `period` and `benchmark`.
+`GET /research/runs/{id}/readiness` uses the retained run parameters and dataset.
+Both expose the strict `ReadinessData` response schema in OpenAPI, with independent
+capability statuses, bounded per-symbol gap samples, and actionable issues.
+Neither request writes data or calls a provider.
 
 ## Read/write separation
 

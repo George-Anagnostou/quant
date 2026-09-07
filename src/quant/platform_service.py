@@ -26,9 +26,25 @@ class PlatformService:
             "providers":["yahoo","sec"],"baseCurrency":"USD","calendars":["XNYS"],
             "limits":{"portfolioPositions":200,"jointRiskPositions":50,"factorProxies":5,"recordBytes":8388608},
             "units":{"returns":"fraction","weights":"fraction","legacyCorePercentColumns":"explicit % suffix","costs":"basis points"},
-            "features":["snapshots","frozen_research_runs","evidence","ledger_reconciliation","market_breadth","factor_proxies","hypothesis_tests","agent_evaluations"],
+            "features":["snapshots","portfolio_readiness","frozen_research_runs","evidence","ledger_reconciliation","market_breadth","factor_proxies","hypothesis_tests","agent_evaluations"],
             "conventions":{"riskFreeRate":0,"annualization":252,"ledgerEvents":"end_of_day","backcastsAreActualPerformance":False},
-            "workflow":["Inspect data quality","Import a dated snapshot","Create a frozen run","Inspect its warnings and evidence","Save a report acknowledging every warning","Replay the run"]}
+            "workflow":["Inspect data quality","Import a dated snapshot","Check snapshot readiness","Create a frozen run","Inspect its warnings and evidence","Save a report acknowledging every warning","Replay the run"]}
+
+    def readiness(self, snapshot_id, period="1y", benchmark="SPY"):
+        from quant.readiness import portfolio_readiness
+        snapshot = self.records.get("snapshot", snapshot_id)["payload"]
+        return portfolio_readiness(self.path, snapshot, snapshot_id, period, benchmark)
+
+    def run_readiness(self, identifier):
+        from datetime import datetime
+        from quant.readiness import portfolio_readiness
+        record = self.records.get("run", identifier)
+        run = record["payload"]
+        request = run["request"]
+        return portfolio_readiness(self.research.dataset(run), run["snapshot"], request["snapshotId"],
+                                   request["period"], request["benchmark"],
+                                   now=datetime.fromisoformat(record["createdAt"]), run_id=identifier,
+                                   dataset_sha256=run["datasetSha256"])
 
     def valuation(self,body):
         from quant.fundamentals import valuation_sensitivity

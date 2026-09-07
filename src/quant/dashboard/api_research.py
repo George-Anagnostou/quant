@@ -9,6 +9,7 @@ from quant.contracts import (StrictModel, Text, Symbol, SnapshotInput, RunInput,
     EvidenceInput, ThesisInput, LedgerInput, ScenarioInput, ExperimentInput, EvaluationInput, SecurityMetadataInput, ValuationInput)
 from quant.dashboard.api_alpha import ApiEnvelope, ApiWarning, Service, StrictQueryRoute, _envelope, _execute
 from quant.platform_service import PlatformService
+from quant.readiness import ReadinessData
 
 router=APIRouter(route_class=StrictQueryRoute,tags=["research-engine"])
 
@@ -117,6 +118,16 @@ def snapshots(service:Platform,limit:int=Query(100,ge=1,le=1000),offset:int=Quer
 @router.get("/portfolio/snapshots/{identifier}/review",response_model=ApiEnvelope[dict[str,Any]])
 def review(identifier:str,service:Platform,period:Literal["1mo","3mo","6mo","1y","2y","5y"]="1y",benchmark:Symbol="SPY"):
     return respond(lambda:service.research.review(identifier,period,benchmark))
+
+
+@router.get("/portfolio/snapshots/{identifier}/readiness",response_model=ApiEnvelope[ReadinessData])
+def readiness(identifier:str,service:Platform,period:Literal["1mo","3mo","6mo","1y","2y","5y"]="1y",benchmark:Symbol="SPY"):
+    return respond(lambda:service.readiness(identifier,period,benchmark))
+
+
+@router.get("/research/runs/{identifier}/readiness",response_model=ApiEnvelope[ReadinessData])
+def run_readiness(identifier:str,service:Platform):
+    return respond(lambda:service.run_readiness(identifier))
 
 
 @router.post("/research/runs",response_model=ApiEnvelope[dict[str,Any]])

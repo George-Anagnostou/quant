@@ -145,6 +145,13 @@ def _build_parser() -> argparse.ArgumentParser:
     portfolio_risk = command("portfolio-risk", help="calculate stored portfolio risk")
     _add_risk_options(portfolio_risk)
     portfolio_risk.set_defaults(handler=_portfolio_risk)
+    readiness = command("readiness", help="check stored prerequisites for a dated snapshot review")
+    readiness.add_argument("snapshot_id")
+    readiness.add_argument("--period", choices=PERIODS, default="1y")
+    readiness.add_argument("--benchmark", type=_symbol, default="SPY")
+    readiness.set_defaults(handler=lambda client, args: client.request(
+        "GET", f"portfolio/snapshots/{quote(args.snapshot_id, safe='')}/readiness",
+        query={"period": args.period, "benchmark": args.benchmark}))
     for name, endpoint in (("capabilities", "capabilities"), ("quality", "data/quality"),
                            ("gaps", "data/gaps"), ("snapshots", "portfolio/snapshots"), ("universes", "universes")):
         child = command(name, help=f"read {endpoint}")

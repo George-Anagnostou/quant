@@ -25,6 +25,8 @@ trading execution, an embedded agent runner, and broad intraday ingestion are de
 - Immutable, idempotent dated snapshot imports with original-source preservation.
 - Snapshot-based exposure/risk bundles, observed changes, missing-data warnings,
   and explicit separation of backcasts from account performance.
+- Typed snapshot and frozen-run readiness checks: separate valuation/account/risk
+  prerequisites, per-symbol session gaps, and explicit suggested repair steps.
 - Frozen datasets, retained calculation sources/results, content hashes, replay,
   evidence-referenced reports, and a documented external-agent workflow.
 - Explicit SEC recent-filing ingestion, preserved financial observations and

@@ -52,6 +52,35 @@ class MarketDataRepository:
     def _connect(self):
         return database_connection(self.path, read_only=self.read_only)
 
+    def readiness_inputs(self, symbols: list[str], start: date, end: date):
+        """Read metadata and bounded price coverage from one SQLite snapshot."""
+        if not symbols:
+            return {}, pl.DataFrame(schema={"Symbol": pl.String, "Date": pl.Date})
+        placeholders = ",".join("?" for _ in symbols)
+        with database_connection(self.path, read_only=True) as connection:
+            connection.execute("BEGIN")
+            metadata = connection.execute(
+                f"""SELECT s.symbol, s.currency, s.calendar,
+                    (SELECT MAX(session_date) FROM daily_bars b
+                     WHERE b.security_id=s.id AND b.provider=? AND b.session_date<=?
+                     AND b.close>0) AS latest_price_date
+                    FROM securities s WHERE s.symbol IN ({placeholders})""",
+                [DEFAULT_PROVIDER, end.isoformat(), *symbols],
+            ).fetchall()
+            rows = connection.execute(
+                f"""SELECT s.symbol, b.session_date FROM daily_bars b
+                    JOIN securities s ON s.id=b.security_id
+                    WHERE b.provider=? AND s.symbol IN ({placeholders})
+                    AND b.session_date BETWEEN ? AND ? AND b.adjusted_close>0
+                    AND b.close>0 ORDER BY b.session_date,s.symbol""",
+                [DEFAULT_PROVIDER, *symbols, start.isoformat(), end.isoformat()],
+            ).fetchall()
+        frame = pl.DataFrame(
+            [(row["symbol"], date.fromisoformat(row["session_date"])) for row in rows],
+            schema={"Symbol": pl.String, "Date": pl.Date}, orient="row",
+        )
+        return {row["symbol"]: dict(row) for row in metadata}, frame
+
     def save(
         self,
         market_data: pl.DataFrame,

@@ -39,6 +39,9 @@
   validation. `ledger.py` owns reconciled account history and performance conventions.
 - `discovery.py` owns observed-universe discovery and bounded research experiments.
   `platform_service.py` adapts application capabilities for `dashboard/api_research.py`.
+- `readiness.py` checks stored prerequisites for dated reviews without performing
+  financial calculations. Keep capability statuses separate and do not infer
+  missing sessions for unverified calendars. Reads must never enqueue repairs.
 - New alpha rates and weights are fractions. Preserve backcast/actual-performance,
   availability/retrieval-time, and current/historical-universe distinctions.
 - Frozen databases in `data/artifacts/` are generated evidence copies. Do not commit

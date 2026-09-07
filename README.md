@@ -109,3 +109,5 @@ PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s tests
 Tests use temporary storage and mock provider boundaries. No linter, formatter,
 or type checker is configured. See [the delivery status](docs/DATA_PIPELINE_ROADMAP.md)
 and [API notes](docs/API_EXPANSION_PLAN.md) for implemented boundaries and future work.
+The [development log](docs/DEVELOPMENT_LOG.md) records what changed, why, validation,
+and remaining limitations.

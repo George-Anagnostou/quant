@@ -74,7 +74,32 @@ can be posted to `/securities/metadata`, with `importKey`, `symbol`, `currency`,
 SPY receive known US metadata during ingestion. Other instruments are not
 automatically classified by ticker spelling.
 
-## 2. Freeze a research run
+## 2. Check readiness, then freeze a research run
+
+```sh
+uv run quant query readiness SNAPSHOT_ID --period 1y --benchmark SPY
+```
+
+This stored-only request checks prerequisites for valuation, total account value,
+and historical risk separately. `ready` means all checked prerequisites hold;
+`limited` means some checked capabilities or valuations remain usable with stated
+limits; `blocked` means none meets these prerequisites. Each capability also has
+its own status and issue codes. Cash-only snapshots mark risk `not_applicable`.
+Missing cash blocks account value without blocking securities risk. These statuses
+do not certify an investment conclusion or statistical significance.
+
+Inspect `warnings[].affects`, `symbols`, and `action`. Per-security coverage counts
+usable close/adjusted-close pairs on the requested sessions. Missing-session samples
+contain at most 20 dates; the count is the full count. Unknown calendars produce
+unknown gap counts. The window ends at the snapshot's latest completed session,
+with today's session available only after the conservative provider cutoff.
+This checks freshness as well as completeness: a review can still return older
+risk results explicitly flagged as stale when readiness blocks current risk.
+
+Fix verified metadata explicitly and enqueue ingestion only when needed. Persistent
+gaps may reflect a shorter listing history or unsupported provider data; retrying
+does not establish coverage. Check readiness again, then create the frozen run.
+Live readiness is advisory and may change before run creation.
 
 ```json
 {
@@ -88,6 +113,7 @@ automatically classified by ticker spelling.
 ```sh
 uv run quant query request research/runs --method POST --json-file run.json
 uv run quant query request research/runs/RUN_ID
+uv run quant query request research/runs/RUN_ID/readiness
 uv run quant query request research/runs/RUN_ID/replay
 ```
 
@@ -96,6 +122,12 @@ snapshot, normalized parameters, methodology version, computed results, and
 warnings. Replay verifies the input file and compares freshly calculated results
 with the retained output. Current code supports its current methodology version;
 retain the matching source revision for replay across future method changes.
+
+Run readiness rechecks the frozen dataset using the original request and the run's
+creation time. Its dataset hash is returned in both data and envelope metadata.
+It uses the currently installed readiness method (reported separately), rather
+than adding or altering evidence in the immutable run. It cannot enqueue repairs
+to a frozen dataset; fix live inputs and create a new run when needed.
 
 The analysis date is the portfolio snapshot date. Later market data is excluded.
 A frozen current dataset enables reproducibility; it does not prove that its
