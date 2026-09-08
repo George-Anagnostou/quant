@@ -12,7 +12,7 @@ from quant.query_cli import main as query_main
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8001
-DEFAULT_HORIZON = date(2025, 1, 1)
+DEFAULT_HORIZON = None
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -26,6 +26,12 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     parser = _build_parser()
     args = parser.parse_args(arguments)
+    if args.command == "data" and args.data_command == "backup":
+        import json
+        from quant.database import backup_database
+        backup_database(args.database, args.destination)
+        print(json.dumps({"backup": str(args.destination), "verified": True}))
+        return
     if args.command == "serve":
         run_server(
             host=args.host,
@@ -47,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     serve = commands.add_parser(
-        "serve", help="start the webpage, API, and startup data synchronization"
+        "serve", help="start the webpage, API, and background data synchronization"
     )
     serve.add_argument("--host", default=DEFAULT_HOST)
     serve.add_argument("--port", type=_port, default=DEFAULT_PORT)
@@ -55,13 +61,13 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--no-sync",
         action="store_true",
-        help="skip provider synchronization before accepting requests",
+        help="disable scheduled and explicitly queued provider synchronization",
     )
     serve.add_argument(
         "--horizon",
         type=_date,
         default=DEFAULT_HORIZON,
-        help="earliest session for newly tracked symbols (YYYY-MM-DD)",
+        help="override history horizon (default: 10 years personal, 5 years universe)",
     )
     serve.add_argument(
         "--batch-size",
@@ -77,6 +83,9 @@ def _build_parser() -> argparse.ArgumentParser:
     data_commands = data.add_subparsers(dest="data_command")
     status = data_commands.add_parser("status", help="inspect stored data coverage")
     status.add_argument("arguments", nargs=argparse.REMAINDER)
+    backup = data_commands.add_parser("backup", help="create an exclusive verified SQLite backup")
+    backup.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    backup.add_argument("--destination", type=Path, required=True)
     return parser
 
 

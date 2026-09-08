@@ -4,7 +4,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Hashable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import math
 import re
@@ -243,6 +243,8 @@ T = TypeVar("T")
 class _CacheEntry:
     value: object
     expires_at: float
+    loaded_at: float
+    retrieved_at: str
 
 
 @dataclass
@@ -250,6 +252,7 @@ class _Flight:
     event: Event
     result: object | None = None
     error: BaseException | None = None
+    metadata: dict | None = None
 
 
 class BoundedTTLCache:
@@ -275,6 +278,8 @@ class BoundedTTLCache:
         key: Hashable,
         ttl: float,
         loader: Callable[[], T],
+        *,
+        with_metadata: bool = False,
     ) -> T:
         if isinstance(ttl, bool) or not isinstance(ttl, (int, float)):
             raise ValueError("ttl must be a positive finite number")
@@ -285,7 +290,9 @@ class BoundedTTLCache:
             entry = self._entries.get(key)
             if entry is not None and self._clock() < entry.expires_at:
                 self._entries.move_to_end(key)
-                return deepcopy(entry.value)  # type: ignore[return-value]
+                metadata = {"source":"cache", "retrievedAt":entry.retrieved_at,
+                            "cacheAgeSeconds":max(0,self._clock()-entry.loaded_at), "staleFallback":False, "providerError":None}
+                return {"data":deepcopy(entry.value),"cache":metadata} if with_metadata else deepcopy(entry.value)
             stale = entry
             flight = self._flights.get(key)
             if flight is None:
@@ -299,7 +306,7 @@ class BoundedTTLCache:
             flight.event.wait()
             if flight.error is not None:
                 raise flight.error
-            return deepcopy(flight.result)  # type: ignore[return-value]
+            return {"data":deepcopy(flight.result),"cache":deepcopy(flight.metadata)} if with_metadata else deepcopy(flight.result)
 
         try:
             try:
@@ -308,22 +315,31 @@ class BoundedTTLCache:
                 if stale is None:
                     raise
                 value = stale.value
+                metadata = {"source":"cache", "retrievedAt":stale.retrieved_at,
+                            "cacheAgeSeconds":max(0,self._clock()-stale.loaded_at), "staleFallback":True, "providerError":"provider_unavailable"}
                 with self._lock:
                     if key in self._entries:
                         self._entries.move_to_end(key)
             else:
                 cached_value = deepcopy(value)
+                retrieved_at = datetime.now(timezone.utc).isoformat()
+                loaded_at = self._clock()
+                metadata = {"source":"live", "retrievedAt":retrieved_at,
+                            "cacheAgeSeconds":0, "staleFallback":False, "providerError":None}
                 with self._lock:
                     self._entries[key] = _CacheEntry(
                         cached_value,
                         self._clock() + ttl,
+                        loaded_at,
+                        retrieved_at,
                     )
                     self._entries.move_to_end(key)
                     while len(self._entries) > self._max_entries:
                         self._entries.popitem(last=False)
                 value = cached_value
             flight.result = value
-            return deepcopy(value)
+            flight.metadata = metadata
+            return {"data":deepcopy(value),"cache":deepcopy(metadata)} if with_metadata else deepcopy(value)
         except BaseException as error:
             flight.error = error
             raise
@@ -369,6 +385,11 @@ class CachedResearchService:
         return self._cached(
             "profile", (symbol,), lambda: self._provider.profile(symbol)
         )
+
+    def profile_with_metadata(self, symbol: str):
+        symbol = _normalize_symbol(symbol)
+        return self._cache.get_or_load(("profile",symbol), CACHE_TTLS["profile"],
+            lambda: _clean_json(self._provider.profile(symbol)), with_metadata=True)
 
     def analyst(self, symbol: str) -> dict[str, JsonValue]:
         symbol = _normalize_symbol(symbol)

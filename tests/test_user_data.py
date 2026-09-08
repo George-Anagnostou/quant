@@ -24,7 +24,7 @@ class UserDataRepositoryTests(unittest.TestCase):
             with sqlite3.connect(path) as connection:
                 connection.execute("CREATE TABLE legacy (id INTEGER PRIMARY KEY)")
 
-            with self.assertRaisesRegex(RuntimeError, "delete it and recreate it"):
+            with self.assertRaisesRegex(RuntimeError, "preserve it and use an explicit migration"):
                 initialize_database(path)
 
     def test_initializes_concurrent_requests_once(self) -> None:

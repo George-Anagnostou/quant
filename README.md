@@ -1,159 +1,104 @@
 # Quant
 
-Quant is a local US equity research server built with SQLite, Polars, and
-FastAPI. One `quant` program owns startup synchronization, the database, the
-webpage, the API, and its machine-readable CLI client.
+Quant is a local investment research engine for external agents. SQLite preserves
+market and portfolio data, Polars performs financial calculations, and FastAPI
+provides one contract shared by the CLI and dashboard. Agents investigate and
+interpret results without implementing their own financial calculation path.
 
-## Install
-
-Python 3.14 is pinned in `.python-version`. Install dependencies with:
+## Run
 
 ```sh
 uv sync
-```
-
-## Server
-
-Start the canonical server:
-
-```sh
 uv run quant serve
 ```
 
-Open http://127.0.0.1:8001.
+Python 3.14 is pinned in `.python-version`. The server listens at
+http://127.0.0.1:8001. It serves stored data while a single background worker
+synchronizes Yahoo daily history. `--no-sync` disables all scheduled ingestion;
+`--database PATH` selects an isolated store. An optional `--horizon YYYY-MM-DD`
+overrides the defaults of ten years for personal symbols/benchmarks and five years
+for the current S&P universe. Other options are `--host`, `--port`, and
+`--batch-size` (1–100).
 
-On startup, Quant refreshes S&P 500 membership, incrementally refreshes existing
-symbols with a 14-calendar-day correction overlap, and backfills newly tracked
-symbols to January 1, 2025. Provider failures are reported without preventing
-the server from serving existing stored data. Disable all startup network work
-for tests or offline use with:
+Keep the server on loopback. The current identity is `local-admin`; new durable
+write endpoints enforce loopback access and same-origin browser requests.
+Hosted accounts and network authentication remain outside this personal release.
+
+## Agent workflow
 
 ```sh
-uv run quant serve --no-sync
+uv run quant query capabilities
+uv run quant query quality
+uv run quant query gaps
+uv run quant query quotes AAPL MSFT
+uv run quant query risk AAPL MSFT --period 1y --benchmark SPY
+uv run quant query request portfolio/snapshots --method POST --json-file snapshot.json
+uv run quant query request research/runs --method POST --json-file run.json
+uv run quant query request research/runs/RUN_ID/replay
 ```
 
-Runtime options include `--host`, `--port`, `--database`, `--horizon`, and
-`--batch-size`. The current server is unauthenticated; keep it bound to loopback.
+Follow [the complete external-agent workflow](docs/AGENT_WORKFLOW.md) for snapshot
+formats, research runs, evidence references, reports, fundamentals, ETF holdings,
+ledger reconciliation, scenarios, experiments, and evaluation.
 
-The current API is unauthenticated and always acts as `local-admin`. Keep it
-bound to loopback and do not expose it to a LAN or the internet until Clerk
-authentication is implemented.
+`quant query` is a thin JSON API client. It never reads SQLite, calls providers,
+or computes financial results. `quant data status` is an alias for the same API
+coverage query. `quant query request` provides all additional alpha resources
+through GET or explicit POST; `--json-file -` reads a JSON body from stdin.
+Global `--base-url`, `--timeout`, and `--pretty` options also work after commands.
+Environment equivalents are `QUANT_API_BASE_URL` and `QUANT_API_TIMEOUT`.
 
-Routes:
-
-- `/` serves the dashboard.
-- `/api/*` temporarily provides the webpage's legacy JSON routes.
-- `/docs` provides generated API documentation.
-- `/api/alpha/*` provides the stored-only automation API.
-- `/api/alpha/docs` documents the isolated, typed alpha contract.
-
-The dashboard includes an EOD watchlist, holdings and allocation, local security
-search, stored price history, technical and risk analysis, a momentum screener,
-and on-demand company research.
-
-FastAPI routes delegate portfolio and technical calculations to shared Polars
-services. Durable market data is read from SQLite. Provider synchronization is
-an explicit server-startup phase rather than a second program or client-side
-calculation path.
-
-The server uses `data/quant.db` as the sole source of truth for users, position
-lots, watchlists, securities, universes, and daily market bars.
-The schema is user-scoped, while current API requests operate as the bootstrap
-`local-admin` user until application authentication is added.
+Success responses contain `data`, `meta`, and `warnings`. Errors go to stderr as
+`{"ok":false,"error":...}`. Exit codes: 2 invalid input/configuration, 3 transport,
+4 timeout, 5 API 4xx, 6 API 5xx, 7 invalid response, 130 interruption. Unknown and
+repeated query options, non-finite JSON, duplicate JSON keys in CLI input/output,
+redirects, and oversized CLI responses are rejected.
 
 ## API
 
-- `/api/health` reports server availability.
-- `/api/quotes` and `/api/quote/{symbol}` return stored EOD observations.
-- `/api/watchlist` reads and updates the current user's watchlist.
-- `/api/holdings` reads and updates portfolio lots.
-- `/api/analysis/{symbol}` returns stored technical history.
-- `/api/search` searches locally stored securities, with optional remote search.
-- `/api/risk` and `/api/portfolio/risk` return stored-EOD risk analysis.
-- `/api/screener` scores explicit symbols or the watchlist and holdings.
-- `/api/research/{symbol}/*` returns cached profile, analyst, earnings, options,
-  news, daily-history, and intraday provider responses.
+- `/` is the existing dashboard; legacy `/api/*` routes remain compatible.
+- `/api/alpha/docs` documents the agent contract and write request schemas.
+- `/api/alpha/capabilities` describes methods, conventions, features, and limits.
+- `/api/alpha/data/quality` and `/data/gaps` explain stored data readiness.
+- `/api/alpha/portfolio/snapshots` imports dated account observations.
+- `/api/alpha/research/runs` freezes data and calculations for repeatable research.
+- `/api/alpha/research/records/{kind}/{id}` retrieves retained records.
 
-Risk-return fields are fractions. Annualized metrics use 252 trading sessions
-and a zero risk-free rate. Historical portfolio valuation assumes the currently
-stored shares were held for the full selected period and uses dates where every
-holding has an adjusted close. Return attribution compares the first and last
-common dates; variance-risk attribution uses static latest-date weights.
+All analytical GETs, including legacy dashboard analytics, read stored data.
+Legacy `refresh` flags no longer trigger market downloads. Explicit transient
+research routes remain provider-backed. POST `/research/live/profile` also reports
+cache age and stale fallback. Explicit POST `/research/sec` ingests SEC evidence;
+configure `QUANT_SEC_USER_AGENT` with an identifying name and contact email.
 
-Company research is not durable application data. It is requested explicitly
-through an injectable yfinance boundary and held in a bounded in-memory cache.
-Profiles are cached for 24 hours, analyst and earnings data for one hour, search
-and news for five minutes, options for one minute, and history/intraday data for
-30 seconds. Expired values are used as a fallback when the provider is briefly
-unavailable.
+## Data and financial conventions
 
-The stored-only alpha read API is available. Authentication and typed write
-contracts remain planned work; see `docs/DATA_PIPELINE_ROADMAP.md`.
-
-## Automation CLI
-
-`quant query` is a thin, machine-readable client for `/api/alpha`. It validates
-inputs and renders JSON, while all database access and financial computation
-remain on the running server:
+`data/quant.db` is authoritative. Schema v1 upgrades non-destructively to v2 with a
+verified pre-migration backup. Unknown/unversioned database layouts are not
+silently converted. SQLite uses WAL, foreign keys, short transactions, and
+provider-separated bars. Online backups use SQLite's backup interface and verify
+integrity and foreign keys. Make an additional backup with:
 
 ```sh
-uv run quant query health
-uv run quant query status AAPL MSFT
-uv run quant query quotes AAPL MSFT
-uv run quant query bars AAPL --start 2026-01-01 --limit 100
-uv run quant query technical AAPL --windows 20 50 200
-uv run quant query risk AAPL MSFT --period 1y --benchmark SPY
-uv run quant query screener AAPL MSFT
-uv run quant query portfolio
-uv run quant query portfolio-risk --period 1y
-uv run quant data status AAPL MSFT
+uv run quant data backup --destination /absolute/path/quant-backup.db
 ```
 
-Responses are deterministic JSON envelopes containing `data`, `meta`, and
-`warnings`. Configure the client with `QUANT_API_BASE_URL` and
-`QUANT_API_TIMEOUT`, or the corresponding `--base-url` and `--timeout` options.
-Global options work before or after the command. Use `--pretty` for indented
-output. Success JSON is written to stdout; errors are written to stderr as
-`{"ok":false,"error":...}` and use these stable exit codes:
+Research-run copies in `data/artifacts/` are immutable evidence artifacts. Preserve
+that directory alongside the database for replay. Runs include calculation source
+and its digest; replay rejects a changed source revision instead of silently
+using different financial methods. Backups and artifacts have no automatic deletion
+policy; monitor disk use and archive them deliberately.
 
-Every daily observation carries its own ISO `date` field. This includes quotes,
-bars, technical points, risk and screener rows, priced portfolio positions, and
-portfolio-history points, so clients do not infer chronology from array order
-or translate endpoint-specific date names.
+New returns, rates, and weights use fractions; existing screener scores use 0–100.
+Risk uses 252 sessions and zero risk-free rate. Current-holding history is a
+hypothetical backcast; actual ledger performance is separately gated on declared
+completeness, daily valuation, and reconciliation. Cash flows and ledger events
+are treated as end-of-day. See the workflow for limitations, including split
+adjustments and conservative money-weighted-return availability.
 
-| Code | Meaning |
-| ---: | --- |
-| 2 | Invalid command or local configuration |
-| 3 | Connection or transport failure |
-| 4 | Timeout |
-| 5 | API 4xx response |
-| 6 | API 5xx response |
-| 7 | Invalid API response |
-| 130 | Interrupted by the user |
-
-The API rejects unknown and repeated query parameters so misspelled agent input
-cannot silently change request semantics. It also refuses redirects and the CLI
-rejects oversized, malformed, duplicate-key, and non-finite JSON responses.
-
-Alpha GET requests never contact Yahoo or write to SQLite. Missing or incomplete
-stored data is reported through partial-data warnings or an
-`insufficient_data` error. Data synchronization occurs before the server starts
-unless `--no-sync` is set.
-
-All alpha returns, weights, alpha, volatility, and contributions are fractions;
-`0.0125` means 1.25%. Screener scores remain on a 0-100 scale. Every market-data
-response identifies its observation date, provider, price basis, and a simple
-calendar-day freshness status. Data status separately reports close-bar,
-complete-OHLCV, and adjusted-close coverage.
-
-## Storage
-
-`data/quant.db` is the only runtime data store. SQLite uses WAL mode, foreign
-keys, short transactions, and provider-separated daily bars. Generated database,
-WAL, and shared-memory files are ignored by Git.
-
-This pre-release schema starts fresh and does not migrate older local database
-layouts. Delete `data/quant.db*` after switching from an earlier branch.
+The built-in XNYS calendar covers 2010–2030 and uses conservative 20:00 Eastern
+provider availability. Currency and calendar are explicit security metadata;
+unknown metadata remains visible. The supported analytical scope is USD stocks
+and ETFs, not a general multi-currency or intraday accounting system.
 
 ## Tests
 
@@ -161,9 +106,8 @@ layouts. Delete `data/quant.db*` after switching from an earlier branch.
 PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s tests
 ```
 
-Unit tests must mock Yahoo and Wikipedia boundaries; they should not require
-network access.
-
-See `INTEGRATION_REVIEW.md` for the merged PR inventory and current ownership
-boundaries. See `docs/DATA_PIPELINE_ROADMAP.md` for planned ingestion,
-authentication, API, deployment, and historical-analysis work.
+Tests use temporary storage and mock provider boundaries. No linter, formatter,
+or type checker is configured. See [the delivery status](docs/DATA_PIPELINE_ROADMAP.md)
+and [API notes](docs/API_EXPANSION_PLAN.md) for implemented boundaries and future work.
+The [development log](docs/DEVELOPMENT_LOG.md) records what changed, why, validation,
+and remaining limitations.
