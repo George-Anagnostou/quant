@@ -61,7 +61,7 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--no-sync",
         action="store_true",
-        help="disable the background ingestion worker and queued synchronization",
+        help="disable scheduled and explicitly queued provider synchronization",
     )
     serve.add_argument(
         "--horizon",

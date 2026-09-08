@@ -103,16 +103,20 @@ class IngestionService:
             starts = {s: horizon or date(max(2010, latest.year-(10 if s in personal else 5)), 1, 1)
                       for s in symbols}
             run_id = run_id or str(uuid.uuid4())
-            with database_connection(self.path) as db:
+            with database_connection(self.path, read_only=True) as db:
                 existing = db.execute("SELECT id FROM ingestion_runs WHERE id=?", (run_id,)).fetchone()
                 if existing:
                     return self.run(run_id)
-                db.execute("INSERT INTO ingestion_runs VALUES (?,?,NULL,'running',?)", (run_id, utc_now(), universe_source))
+            jobs = []
             for symbol in symbols:
                 start, reasons = self.plan(symbol, starts[symbol], latest)
-                with database_connection(self.path) as db:
-                    db.execute("INSERT INTO ingestion_jobs(run_id,symbol,start_date,reasons,status) VALUES (?,?,?,?, 'pending')",
-                               (run_id, symbol, start.isoformat(), json.dumps(reasons)))
+                jobs.append((run_id, symbol, start.isoformat(), json.dumps(reasons)))
+            # Publish the entire plan atomically. Interrupted planning leaves an
+            # explicit request queued; recovery never sees a truncated job list.
+            with database_connection(self.path) as db:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("INSERT INTO ingestion_runs VALUES (?,?,NULL,'running',?)", (run_id, utc_now(), universe_source))
+                db.executemany("INSERT INTO ingestion_jobs(run_id,symbol,start_date,reasons,status) VALUES (?,?,?,?, 'pending')", jobs)
             self._execute(run_id, batch_size, latest)
             return self.run(run_id)
 
@@ -124,10 +128,13 @@ class IngestionService:
         starts, reasons = [max(horizon, last-timedelta(days=14))], ["correction_overlap"]
         with database_connection(self.path, read_only=True) as db:
             coverage = db.execute("SELECT requested_start FROM sync_coverage WHERE symbol=?", (symbol,)).fetchone()
+            security = db.execute("SELECT calendar FROM securities WHERE symbol=?", (symbol,)).fetchone()
         if first > horizon and (not coverage or horizon.isoformat() < coverage[0]):
             starts.append(horizon)
             reasons.append("missing_prefix")
-        missing = sorted(set(sessions(max(horizon, first), min(last, latest))) - set(history["Date"])) if max(horizon,first) <= min(last,latest) else []
+        calendar = security["calendar"] if security else None
+        missing = (sorted(set(sessions(max(horizon, first), min(last, latest), calendar)) - set(history["Date"]))
+                   if calendar == "XNYS" and max(horizon,first) <= min(last,latest) else [])
         if missing:
             starts.append(missing[0])
             reasons.append("internal_gap")

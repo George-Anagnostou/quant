@@ -1,11 +1,25 @@
 """Explicit SEC ingestion boundary and dated research evidence services."""
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
+import math
 import os
 from urllib.request import Request, urlopen
 
-from quant.contracts import EvidenceInput, ThesisInput
+from pydantic import TypeAdapter
+
+from quant.contracts import EvidenceInput, Symbol, ThesisInput
 from quant.record_store import RecordRepository
+
+_SYMBOL = TypeAdapter(Symbol)
+
+
+def _finite_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 class SECProvider:
@@ -34,31 +48,38 @@ class FundamentalService:
 
     def save(self, body: EvidenceInput):
         if body.category == "facts":
-            import math
             facts=body.data.get("facts")
             if not isinstance(facts,list):
                 raise ValueError("Financial evidence requires a facts list")
             for fact in facts:
+                if not isinstance(fact, dict):
+                    raise ValueError("Each financial fact must be an object")
                 value=fact.get("val")
-                if not isinstance(fact.get("tag"),str) or not isinstance(fact.get("unit"),str) or isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value):
+                if any(not isinstance(fact.get(key), str) or not fact[key].strip() for key in ("tag", "unit")) or not _finite_number(value):
                     raise ValueError("Facts require tag, unit and finite numeric val")
-                from datetime import date
+                periods = {}
                 for key in ("start","end"):
-                    if fact.get(key):
-                        date.fromisoformat(fact[key])
-                if fact.get("start") and fact.get("end") and fact["start"]>fact["end"]:
+                    if fact.get(key) is not None:
+                        if not isinstance(fact[key], str):
+                            raise ValueError("Fact dates must use YYYY-MM-DD strings")
+                        periods[key] = date.fromisoformat(fact[key])
+                        if periods[key].isoformat() != fact[key]:
+                            raise ValueError("Fact dates must use YYYY-MM-DD strings")
+                if "start" in periods and "end" in periods and periods["start"] > periods["end"]:
                     raise ValueError("Fact period start must not follow end")
         if body.category == "fund_holdings":
             holdings = body.data.get("holdings")
             if not isinstance(holdings, list) or not holdings or len(holdings) > 10000:
                 raise ValueError("Fund evidence requires a nonempty holdings list")
-            import math
             seen, total = set(), 0.0
             for row in holdings:
+                if not isinstance(row, dict):
+                    raise ValueError("Each fund holding must be an object")
                 symbol, weight = row.get("symbol"), row.get("weight")
-                if not isinstance(symbol, str) or not symbol or symbol in seen:
+                symbol = _SYMBOL.validate_python(symbol)
+                if symbol in seen:
                     raise ValueError("Fund constituents must be unique symbols")
-                if isinstance(weight, bool) or not isinstance(weight, (int,float)) or not math.isfinite(weight) or not 0 <= weight <= 1:
+                if not _finite_number(weight) or not 0 <= weight <= 1:
                     raise ValueError("Fund weights must be finite fractions")
                 seen.add(symbol)
                 total += weight
@@ -141,11 +162,13 @@ class FundamentalService:
                 "shares":["CommonStockSharesOutstanding"]}
         observations = []
         for record in evidence:
+            if record["payload"]["category"] != "facts":
+                continue
             for metric, alternatives in tags.items():
                 for fact in record["payload"]["data"].get("facts", []):
                     if fact["tag"] in alternatives:
-                        observations.append({"metric":metric, "evidenceId":record["id"],
-                                             "availableAt":record["payload"]["availableAt"], "retrievedAt":record["createdAt"], **fact})
+                        observations.append({**fact, "metric":metric, "evidenceId":record["id"],
+                                             "availableAt":record["payload"]["availableAt"], "retrievedAt":record["createdAt"]})
         return {"symbol":symbol, "observations":observations,
                 "periodMetrics":company_metrics(observations),
                 "balanceMetrics":balance_metrics(observations),

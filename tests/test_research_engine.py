@@ -158,6 +158,8 @@ class EngineTests(unittest.TestCase):
         days=sessions(date(2026,8,3),date(2026,8,31))
         source=bars(days)
         MarketDataRepository(self.path).save(source.filter((pl.col("Date")>=days[3]) & (pl.col("Date")!=days[6])))
+        with database_connection(self.path) as db:
+            db.execute("UPDATE securities SET calendar='XNYS' WHERE symbol='AAPL'")
         provider=FakeProvider(source)
         service=IngestionService(self.path,provider,sleep=lambda _:None)
         start,reasons=service.plan("AAPL",days[0],days[-1])
@@ -167,6 +169,55 @@ class EngineTests(unittest.TestCase):
         run=service.synchronize(horizon=days[0],today=days[-1])
         self.assertEqual(run["status"],"complete")
         self.assertEqual(MarketDataRepository(self.path).load(["AAPL"]).height,len(days))
+
+    def test_interrupted_planning_keeps_request_queued_until_full_plan_is_saved(self):
+        from quant.platform_service import PlatformService
+        platform = PlatformService(self.path)
+        day = date(2026, 8, 31)
+        request_record = platform.request_sync("interrupted-plan", ["AAPL", "SPY"], day)
+        service = IngestionService(self.path, FakeProvider(bars([day])), sleep=lambda _: None)
+        with patch.object(service, "plan", side_effect=[(day, ["backfill"]), KeyboardInterrupt]):
+            with self.assertRaises(KeyboardInterrupt):
+                service.synchronize(symbols=["AAPL", "SPY"], horizon=day, today=day, run_id=request_record["id"])
+        with database_connection(self.path, read_only=True) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM ingestion_runs").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM ingestion_jobs").fetchone()[0], 0)
+        self.assertEqual(platform.run(request_record["id"])["status"], "queued")
+        recovered = service.synchronize(symbols=["AAPL", "SPY"], horizon=day, today=day, run_id=request_record["id"])
+        self.assertEqual(recovered["status"], "complete")
+        self.assertEqual({job["symbol"] for job in recovered["jobs"]}, {"AAPL", "SPY"})
+
+    def test_ingestion_does_not_infer_session_gaps_for_unknown_calendar(self):
+        days = self.seed()
+        with database_connection(self.path) as db:
+            db.execute("DELETE FROM daily_bars WHERE session_date=? AND security_id=(SELECT id FROM securities WHERE symbol='AAPL')", (days[10].isoformat(),))
+            db.execute("UPDATE securities SET calendar=NULL WHERE symbol='AAPL'")
+        service = IngestionService(self.path)
+        self.assertNotIn("internal_gap", service.plan("AAPL", days[0], days[-1])[1])
+        with database_connection(self.path) as db:
+            db.execute("UPDATE securities SET calendar='XNYS' WHERE symbol='AAPL'")
+        self.assertIn("internal_gap", service.plan("AAPL", days[0], days[-1])[1])
+
+    def test_fact_source_fields_cannot_replace_retained_provenance(self):
+        service = FundamentalService(self.path)
+        evidence = service.save(EvidenceInput(
+            importKey="fact-provenance", symbol="AAPL", category="facts", source="test",
+            sourceUrl="https://example.com", availableAt="2026-08-01T12:00:00Z",
+            data={"facts": [{"tag": "NetIncomeLoss", "unit": "USD", "val": 20,
+                "start": "2026-04-01", "end": "2026-06-30", "metric": "debt",
+                "evidenceId": "wrong", "availableAt": "2000-01-01", "retrievedAt": "wrong"}]}))
+        fact = service.summary("AAPL")["observations"][0]
+        self.assertEqual(fact["metric"], "netIncome")
+        self.assertEqual(fact["evidenceId"], evidence["id"])
+        self.assertEqual(fact["availableAt"], evidence["payload"]["availableAt"])
+        self.assertEqual(fact["retrievedAt"], evidence["createdAt"])
+
+    def test_document_contents_are_not_interpreted_as_validated_financial_facts(self):
+        service = FundamentalService(self.path)
+        service.save(EvidenceInput(importKey="document", symbol="AAPL", category="document",
+            source="test", sourceUrl="https://example.com", availableAt="2026-08-01T12:00:00Z",
+            data={"facts": ["unstructured document content"]}))
+        self.assertEqual(service.summary("AAPL")["observations"], [])
 
     def test_revision_failure_preserves_previous_series(self):
         days=sessions(date(2026,8,3),date(2026,8,10))
@@ -368,6 +419,32 @@ def request(app,path,method="GET",body=None,client="127.0.0.1",query=""):
 class EngineAPITests(unittest.TestCase):
     setUp = EngineTests.setUp
     seed = EngineTests.seed
+
+    def test_malformed_evidence_returns_validation_error_without_writing(self):
+        from quant.dashboard import api_alpha, server
+        from quant.dashboard.services import DashboardService
+        service = DashboardService(market_repository=MarketDataRepository(self.path, read_only=True))
+        common = {"importKey": "bad-evidence", "symbol": "AAPL", "source": "test",
+                  "sourceUrl": "https://example.com", "availableAt": "2026-08-01T12:00:00Z"}
+        cases = [
+            ("facts", {"facts": [None]}),
+            ("facts", {"facts": [{"tag": "Revenues", "unit": "USD", "val": 1, "end": 20260801}]}),
+            ("facts", {"facts": [{"tag": "Revenues", "unit": "USD", "val": 1, "start": "20260801"}]}),
+            ("facts", {"facts": [{"tag": " ", "unit": "USD", "val": 1}]}),
+            ("facts", {"facts": [{"tag": "Revenues", "unit": "USD", "val": 10**500}]}),
+            ("fund_holdings", {"holdings": [None]}),
+            ("fund_holdings", {"holdings": [{"symbol": "bad symbol", "weight": 0.5}]}),
+            ("fund_holdings", {"holdings": [{"symbol": "AAPL", "weight": True}]}),
+        ]
+        before = self.path.read_bytes()
+        with patch.object(api_alpha, "_service", service):
+            for category, data in cases:
+                with self.subTest(category=category, data=data):
+                    status, response = request(server.app, "/api/alpha/research/evidence", "POST",
+                                               {**common, "category": category, "data": data})
+                    self.assertEqual(status, 422, response)
+                    self.assertEqual(response["detail"]["code"], "invalid_request")
+        self.assertEqual(self.path.read_bytes(), before)
     def test_snapshot_to_run_to_replay_through_api(self):
         from quant.dashboard import api_alpha,server
         from quant.dashboard.services import DashboardService

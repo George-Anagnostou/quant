@@ -102,10 +102,6 @@ and ETFs, not a general multi-currency or intraday accounting system.
 
 ## Tests
 
-For a guided offline walkthrough with synthetic data and expected results, use
-the [manual acceptance tests](docs/MANUAL_TESTS.md). The setup script creates an
-isolated database in an empty directory; it does not modify personal data.
-
 ```sh
 PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s tests
 ```

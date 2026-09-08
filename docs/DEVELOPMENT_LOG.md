@@ -71,39 +71,28 @@ the currently installed readiness method and do not amend the run's saved output
 The repository source changed; as with other source changes, replay of older runs
 requires their retained calculation revision. No schema migration is needed.
 
-## 2026-09-08 — Consolidate current code and add manual acceptance tests
+## 2026-09-08 — Review fixes and direct app usage
 
-**Why:** The latest research features were on a previously merged fix branch while
-local `master` was behind GitHub. Keeping obsolete branch names and the unused
-startup-only entry point made it harder to identify the current implementation.
+**Why:** The requested manual testing means commands for using the app, rather
+than a synthetic fixture generator or a separate acceptance harness. Preserve the
+user's revert of that harness and address concrete review findings in the app.
 
 **Changed:**
 
-- Fetched and pruned remote references, fast-forwarded local `master` to GitHub's
-  current `master`, then merged the two newer feature commits without rewriting
-  their history (`fc86521`). Removed local `feat/sqlite-data-foundation` and
-  `fix/foundation-stabilization` only after verifying their commits were retained.
-  Removed the already-merged GitHub fix branch using an expected-tip guard.
-- Removed `startup_sync.py`, its unused server import, an unused worker import,
-  and an unused server logger. Moved all three startup-wrapper tests to
-  `test_ingestion.py`, exercising `IngestionService` directly. Provider mocks and
-  failure/backfill coverage remain. CLI help now describes background ingestion
-  and what `--no-sync` actually disables.
-- Added [manual acceptance tests](MANUAL_TESTS.md) and an offline fixture generator
-  at `scripts/prepare_manual_tests.py`. The generator requires an empty directory,
-  supplies deterministic synthetic prices and import requests, and never chooses
-  `data/quant.db`. The walkthrough exercises the public interface and includes
-  expected values, expected errors, restart/backup checks, and failure reporting.
+- Build ingestion plans before publishing a run, then save the run and all jobs
+  in one transaction. Interrupted planning leaves an explicit request queued;
+  recovery cannot mistake a partly created job list for the complete request.
+- Require a verified supported calendar before inferring internal session gaps.
+  Prefix backfills and correction overlaps remain available for unknown calendars.
+- Validate nested fact and fund-holding objects, finite values, dates, and symbols.
+  Malformed evidence now returns a structured validation response without a write.
+  Financial summaries only interpret validated fact-category records, and source
+  fields cannot overwrite retained evidence IDs, timestamps, or normalized metrics.
+- Correct CLI help to describe background ingestion and `--no-sync`. Remove unused
+  imports/logger from active server and worker code; retain the restored startup
+  compatibility entry point. Provide usage commands in the conversation.
 
-**Validation:** All 191 unit tests pass. A separate real localhost HTTP/CLI run
-verified the ten core manual cases: discovery/quotes, idempotent imports, rejected
-requests, risk coverage, unknown cash, frozen replay, live/frozen isolation,
-report evidence and warnings, queued offline sync, and restart/backup persistence.
-The fixture generator's refusal to overwrite existing files was also checked.
-`git diff --check` passes. The optional live-provider check and visual dashboard
-inspection are instructions for manual follow-up, not claimed automated validation.
-
-**Scope:** No financial method or schema changed. The legacy dashboard and its
-used API compatibility routes remain supported. Personal data and retained
-research artifacts were not modified or deleted. `master` is the consolidated
-branch; branch deletion removes names, not the merged history.
+**Validation:** All 196 unit tests pass, including new interruption, unknown-calendar,
+nested-evidence API, and provenance regression cases. Providers are mocked and
+storage is temporary. `git diff --check` passes. Personal data was not changed and
+live provider availability was not tested. No new manual-test harness was added.
