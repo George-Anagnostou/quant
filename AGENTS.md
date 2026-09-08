@@ -32,8 +32,8 @@
 ## Research engine
 
 - `ingestion.py` owns the provider protocol, single-writer file lock, durable jobs,
-  retry/recovery, correction reconciliation, and scheduling; `startup_sync.py` is
-  a compatibility wrapper. `calendars.py` owns the versioned, bounded US calendar.
+  retry/recovery, correction reconciliation, and scheduling. `calendars.py` owns
+  the versioned, bounded US calendar.
 - `record_store.py` owns immutable user-scoped records and write audits.
 - `workflows.py` owns snapshot reviews, frozen research contexts, and report evidence
   validation. `ledger.py` owns reconciled account history and performance conventions.

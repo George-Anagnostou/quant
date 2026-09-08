@@ -272,7 +272,6 @@ class IngestionWorker:
         last_session = None
         while not self.stop_event.is_set():
             try:
-                from quant.record_store import RecordRepository
                 initialize_database(self.path)
                 with database_connection(self.path,read_only=True) as db:
                     pending = db.execute("""SELECT r.* FROM records r LEFT JOIN ingestion_runs i ON i.id=r.id

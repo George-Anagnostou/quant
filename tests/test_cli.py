@@ -22,7 +22,7 @@ class CliTests(unittest.TestCase):
         query_main.assert_called_once_with(["status", "AAPL", "MSFT"])
 
     @patch("quant.cli.run_server")
-    def test_serve_enables_startup_sync_by_default(self, run_server) -> None:
+    def test_serve_enables_background_sync_by_default(self, run_server) -> None:
         main(["serve", "--database", "market.db"])
 
         run_server.assert_called_once_with(

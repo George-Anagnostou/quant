@@ -53,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     serve = commands.add_parser(
-        "serve", help="start the webpage, API, and startup data synchronization"
+        "serve", help="start the webpage, API, and background data synchronization"
     )
     serve.add_argument("--host", default=DEFAULT_HOST)
     serve.add_argument("--port", type=_port, default=DEFAULT_PORT)
@@ -61,7 +61,7 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--no-sync",
         action="store_true",
-        help="skip provider synchronization before accepting requests",
+        help="disable the background ingestion worker and queued synchronization",
     )
     serve.add_argument(
         "--horizon",

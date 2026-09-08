@@ -18,14 +18,12 @@ from quant.dashboard.api_alpha import (
     configure_service as configure_alpha_service,
 )
 from quant.market_store import MarketDataRepository
-from quant.startup_sync import synchronize_on_startup
 from quant.ingestion import IngestionWorker
 from quant.database import initialize_database
 from quant.dashboard.limits import RequestLimitsMiddleware
 from quant.user_data import UserDataRepository
 
 
-logger = logging.getLogger(__name__)
 app = FastAPI(title="Quant Web Server")
 app.add_middleware(RequestLimitsMiddleware)
 app.add_middleware(
