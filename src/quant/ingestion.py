@@ -88,7 +88,7 @@ class IngestionService:
                     logger.warning("Universe refresh failed; continuing with stored and personal symbols")
                 universe = self.market.list_universe_symbols("sp500")
                 users = UserDataRepository(self.path)
-                personal = [*users.list_watchlist(), *users.positions_frame()["Symbol"].to_list(), *benchmarks]
+                personal = [*[lot['symbol'] for lot in users.portfolio_state()['lots']], *benchmarks]
                 # Snapshot imports are durable tracking inputs, without modifying legacy lots.
                 with database_connection(self.path, read_only=True) as db:
                     for row in db.execute("SELECT payload FROM records WHERE kind='snapshot'"):

@@ -27,6 +27,11 @@ EASTERN_TIME = ZoneInfo("America/New_York")
 EOD_SETTLEMENT_TIME = time(20, 0)
 
 
+def normalize_symbol(symbol: str) -> str:
+    """Use the provider share-class spelling at explicit symbol intake boundaries."""
+    return symbol.strip().upper().replace('.', '-')
+
+
 def get_sp500_constituents() -> pl.DataFrame:
     request = Request(
         S_AND_P_500_CONSTITUENTS_URL,
@@ -68,7 +73,7 @@ def get_market_history(
         return pl.DataFrame(schema=MARKET_DATA_SCHEMA)
 
     # Yahoo uses dashes for share classes while the index uses dots.
-    yahoo_to_index_symbol = {symbol.replace(".", "-"): symbol for symbol in symbols}
+    yahoo_to_index_symbol = {normalize_symbol(symbol): symbol for symbol in symbols}
     download_options = {
         "tickers": list(yahoo_to_index_symbol),
         "interval": "1d",

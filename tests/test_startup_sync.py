@@ -47,7 +47,7 @@ class StartupSyncTests(unittest.TestCase):
             market = MarketDataRepository(path)
             market.save(market_frame(["AAPL"], date(2026, 8, 19)))
             users = UserDataRepository(path)
-            users.add_watchlist("NVDA")
+            users.add_position("NVDA", 1, 100)
             users.add_position("GOOG", 1, 100)
 
             result = synchronize_on_startup(

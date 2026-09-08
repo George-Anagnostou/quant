@@ -132,15 +132,56 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_risk_options(screener)
     screener.set_defaults(handler=_screener)
 
-    watchlist = command("watchlist", help="read the current watchlist")
-    watchlist.set_defaults(
-        handler=lambda client, _: client.request("GET", "watchlist")
-    )
-
     portfolio = command("portfolio", help="read stored portfolio valuation")
     portfolio.set_defaults(
         handler=lambda client, _: client.request("GET", "portfolio")
     )
+
+    holdings = command("holdings", help="agent portfolio commands (also quant portfolio)")
+    actions = holdings.add_subparsers(dest="portfolio_command", required=True)
+    for name, endpoint in (("show", "holdings"), ("schema", "schema"), ("schemas", "schemas"), ("history", "history")):
+        child = actions.add_parser(name)
+        _add_global_options(child, suppress_defaults=True)
+        if name == "history":
+            child.add_argument('--limit', type=_bounded_int(1, 1000, 'limit'), default=100)
+            child.add_argument('--offset', type=_bounded_int(0, 1000000, 'offset'), default=0)
+        child.set_defaults(handler=lambda client, args, endpoint=endpoint: client.request(
+            'GET', f'portfolio/{endpoint}', query={'limit': args.limit, 'offset': args.offset} if endpoint == 'history' else None))
+    for name in ('preview', 'apply', 'capture'):
+        child = actions.add_parser(name)
+        _add_global_options(child, suppress_defaults=True)
+        child.add_argument('--json-file', required=True, help='JSON command file, or - for stdin')
+        child.set_defaults(handler=_request, method='POST', path=f'portfolio/{name}')
+    for name, endpoint in (('analysis','analysis'),('transactions','transactions'),('tax-lots','tax-lots'),('nav-list','nav')):
+        child = actions.add_parser(name)
+        _add_global_options(child,suppress_defaults=True)
+        child.add_argument('--account')
+        if name in {'analysis','tax-lots'}:
+            child.add_argument('--date',type=_date)
+        if name in {'transactions','nav-list'}:
+            child.add_argument('--limit',type=_bounded_int(1,1000,'limit'),default=100)
+            child.add_argument('--offset',type=_bounded_int(0,1000000,'offset'),default=0)
+        if name == 'transactions':
+            child.add_argument('--start',type=_date)
+            child.add_argument('--end',type=_date)
+        child.set_defaults(handler=lambda client,args,endpoint=endpoint:client.request('GET',f'portfolio/{endpoint}',
+            query={key:getattr(args,key) for key in ('account','date','start','end','limit','offset') if hasattr(args,key)}))
+    for name,endpoint in (('transactions-preview','transactions/preview'),('transactions-import','transactions/import'),
+                          ('nav-capture','nav'),('nav-report','nav/observations'),('scenario','holdings-scenario'),('simulate-sale','sale-simulation')):
+        child=actions.add_parser(name)
+        _add_global_options(child,suppress_defaults=True)
+        child.add_argument('--json-file',required=True)
+        child.set_defaults(handler=_request,method='POST',path=f'portfolio/{endpoint}')
+    for name in ('nav','performance'):
+        child=actions.add_parser(name)
+        _add_global_options(child,suppress_defaults=True)
+        child.add_argument('identifier')
+        child.set_defaults(handler=lambda client,args,name=name:client.request('GET',
+            f"portfolio/nav/{quote(args.identifier,safe='')}" + ('/performance' if name=='performance' else '')))
+    portfolio_analysis = command('portfolio-analysis',help='ticker valuation, gain and allocation through the portfolio API')
+    portfolio_analysis.add_argument('--account')
+    portfolio_analysis.add_argument('--date',type=_date)
+    portfolio_analysis.set_defaults(handler=lambda client,args:client.request('GET','portfolio/analysis',query={'account':args.account,'date':args.date}))
 
     portfolio_risk = command("portfolio-risk", help="calculate stored portfolio risk")
     _add_risk_options(portfolio_risk)

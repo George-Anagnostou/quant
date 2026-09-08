@@ -51,10 +51,10 @@ def records(frame):
 def positions_frame(snapshot):
     return pl.DataFrame([{"Symbol": p["symbol"], "Quantity": p["quantity"],
                          "Average Cost": p["averageCost"] or 0,
-                         "Sector": p["sector"], "Asset Class": p["assetClass"]}
+                         "Sector": p["sector"], "Asset Class": p["assetClass"], "Strategy":p.get('strategy')}
                         for p in snapshot["positions"]],
                         schema={"Symbol":pl.String, "Quantity":pl.Float64, "Average Cost":pl.Float64,
-                                "Sector":pl.String, "Asset Class":pl.String})
+                                "Sector":pl.String, "Asset Class":pl.String, "Strategy":pl.String})
 
 
 def portfolio_review(path, snapshot, previous=None, period="1y", benchmark="SPY"):
@@ -94,7 +94,7 @@ def portfolio_review(path, snapshot, previous=None, period="1y", benchmark="SPY"
     observed_value = (sum(p["marketValue"] for p in snapshot["positions"])+snapshot["cash"]
                       if snapshot["cash"] is not None and all(p["marketValue"] is not None for p in snapshot["positions"]) else None)
     allocations = {}
-    for name,column in [("sector","Sector"),("assetClass","Asset Class")]:
+    for name,column in [("sector","Sector"),("assetClass","Asset Class"),("strategy","Strategy")]:
         allocation = summarize_allocation(priced,column).sort(column) if priced.height else None
         if allocation is not None and unknown_cost:
             allocation = allocation.drop("Cost Basis","Gain/Loss")
@@ -169,9 +169,9 @@ def portfolio_review(path, snapshot, previous=None, period="1y", benchmark="SPY"
 
 
 class ResearchWorkflow:
-    def __init__(self, path):
+    def __init__(self, path, user_id="local-admin"):
         self.path = Path(path)
-        self.store = RecordRepository(self.path)
+        self.store = RecordRepository(self.path, user_id)
 
     def import_snapshot(self, body: SnapshotInput):
         return self.store.put("snapshot", body.importKey, body.model_dump(mode="json"))
@@ -204,7 +204,7 @@ class ResearchWorkflow:
             artifact = self.path.parent / "artifacts" / (identifier+".db")
             backup_database(self.path, artifact)
             try:
-                frozen = ResearchWorkflow(artifact)
+                frozen = ResearchWorkflow(artifact, self.store.user_id)
                 snapshot = frozen.store.get("snapshot", body.snapshotId)["payload"]
                 previous = frozen.previous_snapshot(snapshot)
                 result = portfolio_review(artifact, snapshot, previous, body.period, body.benchmark)

@@ -26,7 +26,7 @@ class PlatformService:
             "providers":["yahoo","sec"],"baseCurrency":"USD","calendars":["XNYS"],
             "limits":{"portfolioPositions":200,"jointRiskPositions":50,"factorProxies":5,"recordBytes":8388608},
             "units":{"returns":"fraction","weights":"fraction","legacyCorePercentColumns":"explicit % suffix","costs":"basis points"},
-            "features":["snapshots","portfolio_readiness","frozen_research_runs","evidence","ledger_reconciliation","market_breadth","factor_proxies","hypothesis_tests","agent_evaluations"],
+            "features":["portfolio_lots","portfolio_cash","portfolio_mutations","portfolio_preview","portfolio_analysis","strategy_sector_allocation","transaction_imports","realized_gains","daily_nav","actual_account_risk","sale_simulations","holdings_scenarios","profit_contributions","snapshots","portfolio_readiness","frozen_research_runs","evidence","ledger_reconciliation","market_breadth","factor_proxies","hypothesis_tests","agent_evaluations"],
             "conventions":{"riskFreeRate":0,"annualization":252,"ledgerEvents":"end_of_day","backcastsAreActualPerformance":False},
             "workflow":["Inspect data quality","Import a dated snapshot","Check snapshot readiness","Create a frozen run","Inspect its warnings and evidence","Save a report acknowledging every warning","Replay the run"]}
 

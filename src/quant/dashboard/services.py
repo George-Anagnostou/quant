@@ -47,17 +47,8 @@ class DashboardService:
     def user_database_ready(self) -> bool:
         return is_database_initialized(self.repository.path)
 
-    def watchlist(self) -> list[str]:
-        return self.repository.list_watchlist()
-
     def _writer(self):
         return UserDataRepository(self.repository.path, self.repository.user_id)
-
-    def add_watchlist(self, symbol: str) -> list[str]:
-        return self._writer().add_watchlist(symbol)
-
-    def remove_watchlist(self, symbol: str) -> list[str]:
-        return self._writer().remove_watchlist(symbol)
 
     def quotes(
         self,
@@ -479,7 +470,7 @@ class DashboardService:
                 if not positions.is_empty()
                 else []
             )
-            symbols = [*self.repository.list_watchlist(), *position_symbols]
+            symbols = position_symbols
         symbols = list(
             dict.fromkeys(
                 symbol.strip().upper()

@@ -20,6 +20,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     if arguments[:1] == ["query"]:
         query_main(arguments[1:])
         return
+    if arguments[:1] == ["portfolio"]:
+        query_main(["holdings", *arguments[1:]])
+        return
     if arguments[:2] == ["data", "status"]:
         query_main(["status", *arguments[2:]])
         return
@@ -78,6 +81,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     query = commands.add_parser("query", help="query the running API")
     query.add_argument("arguments", nargs=argparse.REMAINDER)
+    portfolio = commands.add_parser("portfolio", help="inspect, preview, and update portfolio lots through the API")
+    portfolio.add_argument("arguments", nargs=argparse.REMAINDER)
 
     data = commands.add_parser("data", help="inspect the server data pipeline")
     data_commands = data.add_subparsers(dest="data_command")

@@ -96,3 +96,47 @@ user's revert of that harness and address concrete review findings in the app.
 nested-evidence API, and provenance regression cases. Providers are mocked and
 storage is temporary. `git diff --check` passes. Personal data was not changed and
 live provider availability was not tested. No new manual-test harness was added.
+
+## 2026-09-08 — Agent-managed portfolio transactions and account analytics
+
+**Problem:** Current holdings lacked an agent-safe mutation and transaction path,
+and portfolio risk used fixed current quantities rather than reconciled account
+history. The watchlist no longer fit an agent-operated research workflow.
+
+**Changed:**
+
+- Saved the initial lot/account/cash implementation as checkpoint `074adbd` on
+  `codex/portfolio-lots`; continued on `codex/portfolio-analysis`.
+- Removed watchlist APIs, CLI and dashboard behavior. Schema v3 retains retired
+  data for recovery and migrates supported databases with a verified backup.
+- Added atomic, revision-checked portfolio mutations and ordered transaction
+  imports with stable source identities, exact book basis, explicit lot sales,
+  cash movements, realized gains, and declared splits. Opening balances and
+  corrections remain distinct from transactions.
+- Added typed ticker valuation, sector/strategy/account/asset allocation, and
+  exact-date price coverage. Full totals and weights remain unavailable when
+  required prices or cash are unknown.
+- Retained daily NAV, price evidence/digests, checkpoint references, and transaction
+  references. Actual risk and return require complete, reconciled history.
+  Benchmark gaps, missing prices, in-period corrections, unverified metadata, and
+  stale pre-split price data are handled explicitly. Broker-reported NAV is a
+  separate observation, and mismatches gate the performance resource.
+- Exposed dollar P&L attribution, ticker/sector/strategy shocks, lot holding days,
+  unrealized/realized gains, and read-only sale simulations. Added API schemas,
+  CLI routes and the portfolio analytics guide. Labeled the dashboard's legacy
+  current-share history as hypothetical.
+
+**Validation:** All 232 tests pass. Coverage includes atomic imports, retry and
+source-identity conflicts, account isolation, partial/full sales, split basis,
+ticker aggregation, missing metadata/prices, cash-flow-adjusted NAV, reconciliation,
+benchmark gaps, retained evidence after corrections, reported NAV mismatches,
+scenarios, sale simulations, typed APIs, and CLI forwarding. JavaScript syntax and
+`git diff --check` pass. Live CLI smoke tests against an isolated `--no-sync` server
+passed for holdings, schemas, portfolio analysis, transactions, and NAV listing.
+No linter, formatter, or type checker is configured. The personal database and
+sample export were not imported or migrated during development.
+
+**Boundaries:** USD analysis, explicit NAV capture, and forward ordered transaction
+application. No automatic corporate-action discovery, general historical rebuild,
+FX/margin accounting, or assumed tax rates/wash-sale compliance. Simulations are
+hypothetical; dollar P&L contributions are not multi-period return contributions.

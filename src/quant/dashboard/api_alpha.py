@@ -225,10 +225,6 @@ class ScreenerData(BaseModel):
     unavailableSymbols: list[str]
 
 
-class WatchlistData(BaseModel):
-    symbols: list[str]
-
-
 class PortfolioSummary(BaseModel):
     positionCount: int
     pricedPositionCount: int
@@ -759,14 +755,6 @@ def screener_alpha(
         price_basis="adjustedClose",
         warnings=_symbol_warnings(data["unavailableSymbols"]),
     )
-
-
-@router.get("/watchlist", response_model=ApiEnvelope[WatchlistData])
-def watchlist_alpha(service: Service) -> ApiEnvelope:
-    symbols = (
-        _execute(service.watchlist) if _user_database_ready(service) else []
-    )
-    return _envelope({"symbols": symbols})
 
 
 @router.get("/portfolio", response_model=ApiEnvelope[PortfolioData])

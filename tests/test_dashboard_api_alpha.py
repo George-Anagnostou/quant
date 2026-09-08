@@ -57,7 +57,6 @@ class DashboardApiAlphaTests(unittest.TestCase):
                 "/securities/{symbol}/technicals",
                 "/market/risk",
                 "/market/screener",
-                "/watchlist",
                 "/portfolio",
                 "/portfolio/risk",
             }),
@@ -142,7 +141,7 @@ class DashboardApiAlphaTests(unittest.TestCase):
             }))
             user = UserDataRepository(path)
             user.add_position("AAPL", 2, 100)
-            user.add_watchlist("AAPL")
+            user.add_position("AAPL", 1, 100)
             service = DashboardService(
                 UserDataRepository(path, read_only=True),
                 MarketDataRepository(path, read_only=True),
@@ -156,7 +155,7 @@ class DashboardApiAlphaTests(unittest.TestCase):
                 ("securities/AAPL/technicals", "windows=2", 200),
                 ("market/risk", "symbols=AAPL", 409),
                 ("market/screener", "", 409),
-                ("watchlist", "", 200), ("portfolio", "", 200),
+                ("portfolio", "", 200),
                 ("portfolio/risk", "", 409),
             ]
             with patch.object(api_alpha, "_service", service):
@@ -182,7 +181,7 @@ class DashboardApiAlphaTests(unittest.TestCase):
                 ("securities/AAPL/technicals", "", 409),
                 ("market/risk", "symbols=AAPL", 409),
                 ("market/screener", "", 409),
-                ("watchlist", "", 200), ("portfolio", "", 200),
+                ("portfolio", "", 200),
                 ("portfolio/risk", "", 409),
             ]
             with patch.object(api_alpha, "_service", service):
