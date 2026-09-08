@@ -52,6 +52,35 @@ class MarketDataRepository:
     def _connect(self):
         return database_connection(self.path, read_only=self.read_only)
 
+    def readiness_inputs(self, symbols: list[str], start: date, end: date):
+        """Read metadata and bounded price coverage from one SQLite snapshot."""
+        if not symbols:
+            return {}, pl.DataFrame(schema={"Symbol": pl.String, "Date": pl.Date})
+        placeholders = ",".join("?" for _ in symbols)
+        with database_connection(self.path, read_only=True) as connection:
+            connection.execute("BEGIN")
+            metadata = connection.execute(
+                f"""SELECT s.symbol, s.currency, s.calendar,
+                    (SELECT MAX(session_date) FROM daily_bars b
+                     WHERE b.security_id=s.id AND b.provider=? AND b.session_date<=?
+                     AND b.close>0) AS latest_price_date
+                    FROM securities s WHERE s.symbol IN ({placeholders})""",
+                [DEFAULT_PROVIDER, end.isoformat(), *symbols],
+            ).fetchall()
+            rows = connection.execute(
+                f"""SELECT s.symbol, b.session_date FROM daily_bars b
+                    JOIN securities s ON s.id=b.security_id
+                    WHERE b.provider=? AND s.symbol IN ({placeholders})
+                    AND b.session_date BETWEEN ? AND ? AND b.adjusted_close>0
+                    AND b.close>0 ORDER BY b.session_date,s.symbol""",
+                [DEFAULT_PROVIDER, *symbols, start.isoformat(), end.isoformat()],
+            ).fetchall()
+        frame = pl.DataFrame(
+            [(row["symbol"], date.fromisoformat(row["session_date"])) for row in rows],
+            schema={"Symbol": pl.String, "Date": pl.Date}, orient="row",
+        )
+        return {row["symbol"]: dict(row) for row in metadata}, frame
+
     def save(
         self,
         market_data: pl.DataFrame,
@@ -147,6 +176,9 @@ class MarketDataRepository:
         end: date | None = None,
         provider: str = DEFAULT_PROVIDER,
         columns: list[str] | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        newest: bool = False,
     ) -> pl.DataFrame:
         self.initialize()
         selected = columns or list(MARKET_DATA_SCHEMA)
@@ -177,40 +209,36 @@ class MarketDataRepository:
             conditions.append("b.session_date <= ?")
             parameters.append(end.isoformat())
 
+        if limit is not None and (isinstance(limit, bool) or not 1 <= limit <= 100_000):
+            raise ValueError("Market row limit must be 1-100000")
+        if offset < 0:
+            raise ValueError("Offset must be nonnegative")
+        sql_columns = {
+            "Date": "b.session_date", "Symbol": "s.symbol", "Company": "s.company",
+            "Open": "b.open", "High": "b.high", "Low": "b.low", "Close": "b.close",
+            "Adjusted Close": "b.adjusted_close", "Last Price": "b.close", "Volume": "b.volume",
+            "Provider": "b.provider", "Retrieved At": "b.retrieved_at",
+        }
+        projection = ", ".join(f'{sql_columns[name]} AS "{name}"' for name in selected)
+        order = "DESC" if newest else "ASC"
+        pagination = " LIMIT ? OFFSET ?" if limit is not None else ""
+        if limit is not None:
+            parameters.extend([limit, offset])
         with self._connect() as connection:
-            records = connection.execute(
-                f"""
-                SELECT b.session_date, s.symbol, s.company, b.open, b.high,
-                       b.low, b.close, b.adjusted_close, b.volume,
-                       b.provider, b.retrieved_at
-                FROM daily_bars AS b
-                JOIN securities AS s ON s.id = b.security_id
-                WHERE {' AND '.join(conditions)}
-                ORDER BY b.session_date, s.symbol
-                """,
-                parameters,
-            ).fetchall()
-        if not records:
+            rows = connection.execute(
+                f"SELECT {projection} FROM daily_bars b JOIN securities s ON s.id=b.security_id "
+                f"WHERE {' AND '.join(conditions)} ORDER BY b.session_date {order},s.symbol"+pagination,
+                parameters).fetchall()
+        if not rows:
             return _empty_market_data(selected)
-
-        frame = pl.DataFrame(
-            {
-                "Date": [date.fromisoformat(row["session_date"]) for row in records],
-                "Symbol": [row["symbol"] for row in records],
-                "Company": [row["company"] for row in records],
-                "Open": [row["open"] for row in records],
-                "High": [row["high"] for row in records],
-                "Low": [row["low"] for row in records],
-                "Close": [row["close"] for row in records],
-                "Adjusted Close": [row["adjusted_close"] for row in records],
-                "Last Price": [row["close"] for row in records],
-                "Volume": [row["volume"] for row in records],
-                "Provider": [row["provider"] for row in records],
-                "Retrieved At": [row["retrieved_at"] for row in records],
-            },
-            schema=MARKET_STORAGE_SCHEMA,
-        )
-        return frame.select(selected)
+        values = [dict(row) for row in rows]
+        if "Date" in selected:
+            for row in values:
+                row["Date"] = date.fromisoformat(row["Date"])
+        frame = pl.DataFrame(values, schema={name: MARKET_STORAGE_SCHEMA[name] for name in selected})
+        if newest and "Date" in selected:
+            frame = frame.sort([name for name in ("Date", "Symbol") if name in selected])
+        return frame
 
     def coverage(
         self,

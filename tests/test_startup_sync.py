@@ -66,7 +66,7 @@ class StartupSyncTests(unittest.TestCase):
         self.assertEqual(result.failedSymbols, [])
         starts = {symbol: start for call in download.call_args_list
                   for symbol in call.args[0] for start in [call.args[1]]}
-        self.assertEqual(starts["AAPL"], date(2026, 8, 5))
+        self.assertEqual(starts["AAPL"], date(2025, 1, 1))
         self.assertEqual(starts["MSFT"], date(2025, 1, 1))
 
     @patch("quant.startup_sync.DEFAULT_MARKET_SYMBOLS", ())

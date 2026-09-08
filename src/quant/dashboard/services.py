@@ -50,17 +50,20 @@ class DashboardService:
     def watchlist(self) -> list[str]:
         return self.repository.list_watchlist()
 
+    def _writer(self):
+        return UserDataRepository(self.repository.path, self.repository.user_id)
+
     def add_watchlist(self, symbol: str) -> list[str]:
-        return self.repository.add_watchlist(symbol)
+        return self._writer().add_watchlist(symbol)
 
     def remove_watchlist(self, symbol: str) -> list[str]:
-        return self.repository.remove_watchlist(symbol)
+        return self._writer().remove_watchlist(symbol)
 
     def quotes(
         self,
         symbols: list[str],
         refresh: bool = False,
-        fetch_missing: bool = True,
+        fetch_missing: bool = False,
     ) -> dict:
         symbols = list(
             dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip())
@@ -248,7 +251,7 @@ class DashboardService:
         }
 
     def holdings(
-        self, refresh: bool = False, fetch_missing: bool = True
+        self, refresh: bool = False, fetch_missing: bool = False
     ) -> dict:
         frame = self.repository.positions_frame()
         if frame.is_empty():
@@ -310,7 +313,7 @@ class DashboardService:
         sector: str | None = None,
         acquired: str | None = None,
     ) -> dict:
-        return self.repository.add_position(
+        return self._writer().add_position(
             symbol,
             shares,
             cost_basis,
@@ -321,7 +324,7 @@ class DashboardService:
         )
 
     def remove_holding(self, holding_id: str) -> bool:
-        return self.repository.remove_position(holding_id)
+        return self._writer().remove_position(holding_id)
 
     def market_analysis(
         self,
@@ -329,7 +332,7 @@ class DashboardService:
         windows: list[int],
         price: str,
         refresh: bool = False,
-        fetch_missing: bool = True,
+        fetch_missing: bool = False,
     ) -> dict:
         if price not in {"close", "adjusted"}:
             raise ValueError("Price must be close or adjusted")
@@ -405,7 +408,7 @@ class DashboardService:
         period: str = "1y",
         benchmark: str = "SPY",
         refresh: bool = False,
-        fetch_missing: bool = True,
+        fetch_missing: bool = False,
     ) -> dict:
         result = analyze_symbol_risk(
             symbols,
@@ -436,7 +439,7 @@ class DashboardService:
         period: str = "1y",
         benchmark: str = "SPY",
         refresh: bool = False,
-        fetch_missing: bool = True,
+        fetch_missing: bool = False,
     ) -> dict:
         result = analyze_portfolio_risk(
             self.repository.positions_frame(),
@@ -467,7 +470,7 @@ class DashboardService:
         period: str = "1y",
         benchmark: str = "SPY",
         refresh: bool = False,
-        fetch_missing: bool = True,
+        fetch_missing: bool = False,
     ) -> dict:
         if symbols is None:
             positions = self.repository.positions_frame()
