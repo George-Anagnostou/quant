@@ -11,7 +11,7 @@ from pathlib import Path
 DEFAULT_DATABASE_PATH = Path("data/quant.db")
 LOCAL_ADMIN_USER_ID = "local-admin"
 MAX_WATCHLIST_SYMBOLS = 20
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _INITIALIZATION_LOCK = threading.Lock()
 
 
@@ -22,7 +22,7 @@ def initialize_database(path: Path = DEFAULT_DATABASE_PATH) -> None:
             version = _schema_version(connection)
             if version == SCHEMA_VERSION:
                 return
-            if version not in {0, 1}:
+            if version not in {0, 1, 2}:
                 raise RuntimeError(
                     f"Database schema {version} is not supported by this version of Quant"
                 )
@@ -31,21 +31,33 @@ def initialize_database(path: Path = DEFAULT_DATABASE_PATH) -> None:
                     f"Existing unversioned database at {path} is not supported; preserve it and use an explicit migration"
                 )
 
-            if version == 1:
-                backup_database(path, path.with_name(f"{path.name}.v1-{uuid.uuid4().hex}.backup"))
+            if version in {1, 2}:
+                backup_database(path, path.with_name(f"{path.name}.v{version}-{uuid.uuid4().hex}.backup"))
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("BEGIN IMMEDIATE")
             version = _schema_version(connection)
             if version == SCHEMA_VERSION:
                 return
-            if version not in {0, 1} or (version == 0 and _application_tables(connection)):
+            if version not in {0, 1, 2} or (version == 0 and _application_tables(connection)):
                 raise RuntimeError(
                     f"Database at {path} changed during initialization; preserve it and inspect its schema"
                 )
             if version == 0:
                 _create_schema(connection)
-            _migrate_v2(connection)
+            if version < 2:
+                _migrate_v2(connection)
+            _migrate_v3(connection)
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _migrate_v3(connection: sqlite3.Connection) -> None:
+    # Retain retired user data for recovery; no runtime feature reads this table.
+    connection.execute("DROP TRIGGER watchlist_size_limit")
+    connection.execute("ALTER TABLE watchlist RENAME TO retired_watchlist")
+    connection.execute("ALTER TABLE positions ADD COLUMN details TEXT NOT NULL DEFAULT '{}'")
+    connection.execute("CREATE TABLE portfolio_state (user_id TEXT PRIMARY KEY REFERENCES users(id), revision INTEGER NOT NULL DEFAULT 0)")
+    connection.execute("CREATE TABLE portfolio_accounts (user_id TEXT NOT NULL REFERENCES users(id), name TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(user_id, name))")
+    connection.execute("CREATE TABLE portfolio_changes (user_id TEXT NOT NULL REFERENCES users(id), import_key TEXT NOT NULL, revision INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(user_id, import_key))")
 
 
 def backup_database(source: Path, destination: Path) -> Path:

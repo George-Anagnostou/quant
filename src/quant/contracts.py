@@ -20,6 +20,7 @@ class Position(StrictModel):
     averageCost: Nonnegative | None = None
     marketValue: Nonnegative | None = None
     sector: Text | None = None
+    strategy: Text | None = None
     assetClass: Text | None = None
     currency: Annotated[str, Field(pattern="^[A-Z]{3}$")] = "USD"
 

@@ -54,9 +54,34 @@ Success responses contain `data`, `meta`, and `warnings`. Errors go to stderr as
 repeated query options, non-finite JSON, duplicate JSON keys in CLI input/output,
 redirects, and oversized CLI responses are rejected.
 
+## Portfolio operations
+
+Use [the portfolio agent guide](docs/PORTFOLIO_AGENT_GUIDE.md) for the lot/account
+model, JSON examples, safe intake prompt, and transaction/correction conventions.
+
+```sh
+uv run quant portfolio show --pretty
+uv run quant portfolio schema --pretty
+uv run quant portfolio preview --json-file portfolio.json --pretty
+uv run quant portfolio apply --json-file portfolio.json --pretty
+uv run quant portfolio history --pretty
+```
+
+See [portfolio analytics and transactions](docs/PORTFOLIO_ANALYTICS.md) for ticker
+valuation, transaction imports, daily NAV, actual account risk, and tax-lot scenarios.
+
+```sh
+uv run quant query portfolio-analysis --pretty
+uv run quant portfolio transactions --pretty
+uv run quant portfolio performance NAV_RECORD_ID --pretty
+```
+
+The dashboard opens on Positions. Watchlists are removed; owned assets and
+evidence-backed investment candidates have separate roles.
+
 ## API
 
-- `/` is the existing dashboard; legacy `/api/*` routes remain compatible.
+- `/` is the existing dashboard; legacy analysis routes remain available; watchlist routes have been removed.
 - `/api/alpha/docs` documents the agent contract and write request schemas.
 - `/api/alpha/capabilities` describes methods, conventions, features, and limits.
 - `/api/alpha/data/quality` and `/data/gaps` explain stored data readiness.
@@ -72,7 +97,7 @@ configure `QUANT_SEC_USER_AGENT` with an identifying name and contact email.
 
 ## Data and financial conventions
 
-`data/quant.db` is authoritative. Schema v1 upgrades non-destructively to v2 with a
+`data/quant.db` is authoritative. Schemas v1 and v2 upgrade non-destructively to v3 with a
 verified pre-migration backup. Unknown/unversioned database layouts are not
 silently converted. SQLite uses WAL, foreign keys, short transactions, and
 provider-separated bars. Online backups use SQLite's backup interface and verify

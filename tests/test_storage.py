@@ -20,18 +20,18 @@ class MarketDataStorageTests(unittest.TestCase):
             path = Path(directory) / "quant ?# data.db"
             frame = pl.DataFrame({"Date": [date(2026, 8, 21)], "Symbol": ["AAPL"], "Close": [100.0]})
             MarketDataRepository(path).save(frame)
-            UserDataRepository(path).add_watchlist("AAPL")
+            position = UserDataRepository(path).add_position("AAPL", 1, 10)
             market = MarketDataRepository(path, read_only=True)
             user = UserDataRepository(path, read_only=True)
             self.assertTrue(is_database_initialized(path))
             self.assertEqual(market.load()["Close"][0], 100.0)
-            self.assertEqual(user.list_watchlist(), ["AAPL"])
+            self.assertEqual(user.list_positions()[0]["symbol"], "AAPL")
             with self.assertRaises(sqlite3.OperationalError):
                 market.save(frame)
             with self.assertRaises(sqlite3.OperationalError):
                 user.add_position("AAPL", 1, 10)
             with self.assertRaises(sqlite3.OperationalError):
-                user.remove_watchlist("AAPL")
+                user.remove_position(position["id"])
 
     def test_read_only_connection_never_creates_missing_database(self) -> None:
         with TemporaryDirectory() as directory:

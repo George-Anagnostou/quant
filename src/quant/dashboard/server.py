@@ -21,6 +21,7 @@ from quant.market_store import MarketDataRepository
 from quant.ingestion import IngestionWorker
 from quant.database import initialize_database
 from quant.dashboard.limits import RequestLimitsMiddleware
+from quant.dashboard.api_research import Write
 from quant.user_data import UserDataRepository
 
 
@@ -36,10 +37,6 @@ app.add_middleware(
 app.mount("/api/alpha", api_alpha_app)
 
 _dashboard_service = DashboardService(read_only=True)
-
-
-class WatchlistAdd(BaseModel):
-    symbol: str
 
 
 class HoldingIn(BaseModel):
@@ -86,24 +83,6 @@ def quote(symbol: str, refresh: bool = False) -> dict:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
 
-@app.get("/api/watchlist")
-def watchlist_get() -> dict:
-    return {"symbols": _dashboard_service.watchlist()}
-
-
-@app.post("/api/watchlist")
-def watchlist_add(body: WatchlistAdd) -> dict:
-    try:
-        return {"symbols": _dashboard_service.add_watchlist(body.symbol)}
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-
-
-@app.delete("/api/watchlist/{symbol}")
-def watchlist_remove(symbol: str) -> dict:
-    return {"symbols": _dashboard_service.remove_watchlist(symbol)}
-
-
 @app.get("/api/holdings")
 def holdings_list(refresh: bool = False) -> dict:
     try:
@@ -113,7 +92,7 @@ def holdings_list(refresh: bool = False) -> dict:
 
 
 @app.post("/api/holdings")
-def holdings_add(body: HoldingIn) -> dict:
+def holdings_add(body: HoldingIn, write: Write) -> dict:
     try:
         return _dashboard_service.add_holding(
             body.symbol,
@@ -129,7 +108,7 @@ def holdings_add(body: HoldingIn) -> dict:
 
 
 @app.delete("/api/holdings/{holding_id}")
-def holdings_remove(holding_id: str) -> dict:
+def holdings_remove(holding_id: str, write: Write) -> dict:
     return {"removed": int(_dashboard_service.remove_holding(holding_id))}
 
 

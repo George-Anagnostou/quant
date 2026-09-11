@@ -72,8 +72,8 @@ class EngineTests(unittest.TestCase):
             db.commit()
         initialize_database(old)
         with database_connection(old,read_only=True) as db:
-            self.assertEqual(db.execute("SELECT symbol FROM watchlist").fetchone()[0],"AAPL")
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],2)
+            self.assertEqual(db.execute("SELECT symbol FROM retired_watchlist").fetchone()[0],"AAPL")
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],3)
         copies=list(old.parent.glob("old.db.v1-*.backup"))
         self.assertEqual(len(copies),1)
         with closing(sqlite3.connect(copies[0])) as db:
@@ -242,7 +242,7 @@ class EngineTests(unittest.TestCase):
 
     def test_universe_failure_does_not_block_personal_symbols(self):
         from quant.user_data import UserDataRepository
-        UserDataRepository(self.path).add_watchlist("AAPL")
+        UserDataRepository(self.path).add_position("AAPL", 1, 100)
         provider=FakeProvider(bars([date(2026,8,31)]))
         provider.constituents=lambda: (_ for _ in ()).throw(RuntimeError("offline"))
         result=IngestionService(self.path,provider).synchronize(horizon=date(2026,8,31),today=date(2026,8,31))
@@ -474,7 +474,7 @@ class EngineAPITests(unittest.TestCase):
         from quant.user_data import UserDataRepository
         self.seed()
         service=DashboardService(UserDataRepository(self.path,read_only=True),MarketDataRepository(self.path,read_only=True))
-        cases=[("/api/quotes","symbols=AAPL&refresh=true"), ("/api/holdings",""), ("/api/watchlist",""),
+        cases=[("/api/quotes","symbols=AAPL&refresh=true"), ("/api/holdings",""),
                ("/api/alpha/capabilities",""),("/api/alpha/data/quality",""),("/api/alpha/data/gaps",""),
                ("/api/alpha/portfolio/snapshots",""),("/api/alpha/research/fundamentals/AAPL",""),
                ("/api/alpha/universes",""),("/api/alpha/research/records/report","")]

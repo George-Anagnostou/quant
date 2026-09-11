@@ -230,7 +230,7 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertEqual(result["correlations"][0]["otherSymbol"], "AAPL")
 
     @patch("quant.dashboard.services.screen_symbols_eod")
-    def test_screener_defaults_to_watchlist_and_holdings(
+    def test_screener_defaults_to_holdings(
         self, screen_symbols_eod
     ) -> None:
         screen_symbols_eod.return_value = pl.DataFrame(
@@ -239,7 +239,7 @@ class DashboardServiceTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "quant.db"
             repository = UserDataRepository(path)
-            repository.add_watchlist("AAPL")
+            repository.add_position("AAPL", 1, 100)
             repository.add_position("MSFT", 1, 100)
             service = DashboardService(repository)
 

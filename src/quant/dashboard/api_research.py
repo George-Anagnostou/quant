@@ -260,3 +260,125 @@ def evaluations(service:Platform,runId:str):
 @router.get("/research/experiments/{identifier}/replay",response_model=ApiEnvelope[dict[str,Any]])
 def replay_experiment(identifier:str,service:Platform):
     return respond(lambda:service.discovery.replay_experiment(identifier))
+
+# Current holdings have their own user-scoped service, separate from frozen research.
+from quant.portfolio_contracts import PortfolioWrite, CurrentSnapshotInput
+from quant.portfolio_service import PortfolioService
+
+
+def current_portfolio(service: Service):
+    return PortfolioService(service.repository.path, service.repository.user_id)
+
+
+CurrentPortfolio = Annotated[PortfolioService, Depends(current_portfolio)]
+
+
+@router.get('/portfolio/holdings', response_model=ApiEnvelope[dict[str, Any]])
+def portfolio_holdings(service: CurrentPortfolio):
+    return respond(service.show)
+
+
+@router.get('/portfolio/schema', response_model=ApiEnvelope[dict[str, Any]])
+def portfolio_schema():
+    return respond(lambda: PortfolioWrite.model_json_schema())
+
+
+@router.post('/portfolio/preview', response_model=ApiEnvelope[dict[str, Any]])
+def portfolio_preview(body: PortfolioWrite, service: CurrentPortfolio):
+    return respond(lambda: service.preview(body))
+
+
+@router.post('/portfolio/apply', response_model=ApiEnvelope[dict[str, Any]])
+def portfolio_apply(body: PortfolioWrite, service: CurrentPortfolio, write: Write):
+    return respond(lambda: service.apply(body))
+
+
+@router.get('/portfolio/history', response_model=ApiEnvelope[list[dict[str, Any]]])
+def portfolio_history(service: CurrentPortfolio, limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
+    return respond(lambda: service.history(limit, offset))
+
+
+@router.post('/portfolio/capture', response_model=ApiEnvelope[RecordData])
+def portfolio_capture(body: CurrentSnapshotInput, service: CurrentPortfolio, write: Write):
+    return respond(lambda: service.snapshot(body))
+
+from quant.portfolio_contracts import (TransactionImport, NavInput, ReportedNavInput,
+    HoldingsScenario, SaleSimulation, PortfolioAnalysisData, TransactionData)
+from quant.ledger import AccountPerformanceService
+
+
+def account_performance(service: Service):
+    return AccountPerformanceService(service.repository.path, service.repository.user_id)
+
+
+AccountPerformance = Annotated[AccountPerformanceService, Depends(account_performance)]
+
+
+@router.get('/portfolio/analysis', response_model=ApiEnvelope[PortfolioAnalysisData])
+def portfolio_analysis(service: CurrentPortfolio, account: str | None = None, date: date | None = None):
+    return respond(lambda: service.analysis(account, date))
+
+
+@router.get('/portfolio/transactions', response_model=ApiEnvelope[list[TransactionData]])
+def portfolio_transactions(service: CurrentPortfolio, account: str | None = None, start: date | None = None,
+                           end: date | None = None, limit: int = Query(100,ge=1,le=10000), offset: int = Query(0,ge=0)):
+    return respond(lambda: service.transactions(account,start,end,limit,offset))
+
+
+@router.post('/portfolio/transactions/preview', response_model=ApiEnvelope[dict[str,Any]])
+def transactions_preview(body: TransactionImport, service: CurrentPortfolio):
+    return respond(lambda: service.preview(body))
+
+
+@router.post('/portfolio/transactions/import', response_model=ApiEnvelope[dict[str,Any]])
+def transactions_import(body: TransactionImport, service: CurrentPortfolio, write: Write):
+    return respond(lambda: service.apply(body))
+
+
+@router.post('/portfolio/nav', response_model=ApiEnvelope[RecordData])
+def nav_capture(body: NavInput, service: AccountPerformance, write: Write):
+    return respond(lambda: service.capture_nav(body))
+
+
+@router.get('/portfolio/nav', response_model=ApiEnvelope[list[dict[str,Any]]])
+def nav_list(service: AccountPerformance, account: str | None = None, limit: int = Query(100,ge=1,le=1000), offset: int = Query(0,ge=0)):
+    return respond(lambda: service.nav_records(account,limit,offset))
+
+
+@router.get('/portfolio/nav/{identifier}', response_model=ApiEnvelope[dict[str,Any]])
+def nav_get(identifier: str, service: AccountPerformance):
+    return respond(lambda: service.get_nav(identifier))
+
+
+@router.post('/portfolio/nav/observations', response_model=ApiEnvelope[RecordData])
+def nav_observation(body: ReportedNavInput, service: AccountPerformance, write: Write):
+    return respond(lambda: service.reported_nav(body))
+
+
+@router.get('/portfolio/tax-lots', response_model=ApiEnvelope[dict[str,Any]])
+def tax_lots(service: CurrentPortfolio, account: str | None = None, date: date | None = None):
+    return respond(lambda: service.tax_lots(account,date))
+
+
+@router.post('/portfolio/sale-simulation', response_model=ApiEnvelope[dict[str,Any]])
+def sale_simulation(body: SaleSimulation, service: CurrentPortfolio):
+    return respond(lambda: service.simulate_sales(body))
+
+
+@router.post('/portfolio/holdings-scenario', response_model=ApiEnvelope[dict[str,Any]])
+def holdings_scenario(body: HoldingsScenario, service: CurrentPortfolio):
+    return respond(lambda: service.scenario(body))
+
+
+from quant.portfolio_contracts import PerformanceData
+
+
+@router.get('/portfolio/nav/{identifier}/performance', response_model=ApiEnvelope[PerformanceData])
+def account_risk(identifier: str, service: AccountPerformance):
+    return respond(lambda:service.performance(identifier))
+
+
+@router.get('/portfolio/schemas', response_model=ApiEnvelope[dict[str,Any]])
+def portfolio_schemas():
+    return respond(lambda:{model.__name__:model.model_json_schema() for model in
+        (PortfolioWrite,TransactionImport,NavInput,ReportedNavInput,HoldingsScenario,SaleSimulation,CurrentSnapshotInput)})

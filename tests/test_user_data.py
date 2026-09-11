@@ -12,7 +12,6 @@ from quant.database import (
     initialize_database,
 )
 from quant.user_data import (
-    MAX_WATCHLIST_SYMBOLS,
     UserDataRepository,
 )
 
@@ -73,7 +72,7 @@ class UserDataRepositoryTests(unittest.TestCase):
             repository = UserDataRepository(Path(directory) / "quant.db")
             repository.initialize()
 
-            self.assertEqual(repository.list_watchlist(), [])
+            self.assertEqual(repository.list_positions(), [])
 
             position = repository.add_position("AAPL", 2, 100.0, account="roth")
             repository.remove_position(position["id"])
@@ -100,39 +99,6 @@ class UserDataRepositoryTests(unittest.TestCase):
                 repository.add_position("AAPL", math.nan, 100)
             with self.assertRaises(ValueError):
                 repository.add_position("AAPL", 1, math.inf)
-
-    def test_limits_watchlist_size_without_rejecting_duplicates(self) -> None:
-        with TemporaryDirectory() as directory:
-            repository = UserDataRepository(Path(directory) / "quant.db")
-            repository.initialize()
-            for index in range(MAX_WATCHLIST_SYMBOLS):
-                repository.add_watchlist(f"SYM{index}")
-
-            self.assertEqual(
-                repository.add_watchlist("SYM0"),
-                repository.list_watchlist(),
-            )
-            with self.assertRaisesRegex(ValueError, "cannot exceed"):
-                repository.add_watchlist("OVERFLOW")
-
-    def test_serializes_concurrent_watchlist_additions_at_limit(self) -> None:
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "quant.db"
-            repository = UserDataRepository(path)
-            repository.initialize()
-
-            def add(index: int) -> None:
-                try:
-                    UserDataRepository(path).add_watchlist(f"SYM{index}")
-                except ValueError:
-                    pass
-
-            with ThreadPoolExecutor(max_workers=12) as executor:
-                futures = [executor.submit(add, index) for index in range(30)]
-                for future in futures:
-                    future.result()
-
-            self.assertEqual(len(repository.list_watchlist()), MAX_WATCHLIST_SYMBOLS)
 
     def test_exposes_positions_as_the_shared_polars_shape(self) -> None:
         with TemporaryDirectory() as directory:

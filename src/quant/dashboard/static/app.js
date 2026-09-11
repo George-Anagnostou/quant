@@ -16,20 +16,8 @@ const api = {
         windows.join(",")
       )}&price=${encodeURIComponent(price)}`
     ),
-  watchlistGet: () => request("/api/watchlist"),
-  watchlistAdd: (symbol) => request("/api/watchlist", "POST", { symbol }),
-  watchlistRemove: (symbol) =>
-    request(`/api/watchlist/${encodeURIComponent(symbol)}`, "DELETE"),
   holdings: (refresh = false) => request(`/api/holdings?refresh=${refresh}`),
-  holdingAdd: (symbol, shares, costBasis, metadata = {}) =>
-    request("/api/holdings", "POST", {
-      symbol,
-      shares,
-      costBasis,
-      ...metadata,
-    }),
-  holdingRemove: (id) =>
-    request(`/api/holdings/${encodeURIComponent(id)}`, "DELETE"),
+  portfolioState: () => request("/api/alpha/portfolio/holdings"),
   search: (query, limit = 8) =>
     request(`/api/search?query=${encodeURIComponent(query)}&limit=${limit}`),
   risk: (symbols, period = "1y", benchmark = "SPY") =>
@@ -163,165 +151,6 @@ function field(label, control) {
     element("span", { class: "field-label" }, label),
     control
   );
-}
-
-async function renderWatchlist() {
-  const root = element("div", { class: "stack" });
-  const content = element("div", {}, loadingPanel());
-  const symbolInput = element("input", {
-    placeholder: "AAPL",
-    autocomplete: "off",
-    "aria-label": "Ticker symbol",
-    oninput: (event) => {
-      event.target.value = event.target.value.toUpperCase();
-    },
-  });
-  const addForm = element(
-    "form",
-    {
-      class: "row",
-      onsubmit: async (event) => {
-        event.preventDefault();
-        const symbol = symbolInput.value.trim().toUpperCase();
-        if (!symbol) return;
-        try {
-          await api.watchlistAdd(symbol);
-          symbolInput.value = "";
-          await drawWatchlist(content);
-        } catch (error) {
-          content.replaceChildren(errorPanel(`Could not add symbol: ${error.message}`));
-        }
-      },
-    },
-    symbolInput,
-    element("button", { type: "submit" }, "Add symbol")
-  );
-  const refreshButton = element(
-    "button",
-    {
-      class: "ghost",
-      type: "button",
-      onclick: async () => {
-        refreshButton.disabled = true;
-        try {
-          await drawWatchlist(content, true);
-          await renderMarketStrip(true);
-        } finally {
-          refreshButton.disabled = false;
-        }
-      },
-    },
-    "Refresh EOD data"
-  );
-
-  root.append(
-    element(
-      "div",
-      { class: "row between page-heading" },
-      element(
-        "div",
-        {},
-        element("h1", {}, "Watchlist"),
-        element(
-          "div",
-          { class: "muted small" },
-          "Latest stored daily close, change, and volume."
-        )
-      ),
-      element("div", { class: "row" }, addForm, refreshButton)
-    ),
-    content
-  );
-  app.replaceChildren(root);
-  await drawWatchlist(content);
-}
-
-async function drawWatchlist(content, refresh = false) {
-  content.replaceChildren(loadingPanel());
-  try {
-    const { symbols } = await api.watchlistGet();
-    if (!symbols.length) {
-      content.replaceChildren(
-        element(
-          "div",
-          { class: "panel empty-state" },
-          element("h2", {}, "No symbols yet"),
-          element("div", { class: "muted" }, "Add a US equity ticker to begin.")
-        )
-      );
-      return;
-    }
-
-    const quotes = await fetchQuotes(symbols, refresh);
-    const quoteBySymbol = new Map(quotes.map((quote) => [quote.symbol, quote]));
-    const body = element("tbody");
-    for (const symbol of symbols) {
-      const quote = quoteBySymbol.get(symbol);
-      const unavailable = !quote || quote.error;
-      body.append(
-        element(
-          "tr",
-          {},
-          element("td", {}, element("a", { href: `#/stock/${symbol}` }, symbol)),
-          element("td", { class: "muted" }, unavailable ? "-" : quote.name),
-          element("td", {}, unavailable ? "Unavailable" : fmtMoney(quote.price)),
-          element(
-            "td",
-            { class: unavailable ? "muted" : changeClass(quote.change) },
-            unavailable ? "-" : fmtMoney(quote.change)
-          ),
-          element(
-            "td",
-            { class: unavailable ? "muted" : changeClass(quote.changePercent) },
-            unavailable ? "-" : fmtPercent(quote.changePercent)
-          ),
-          element("td", { class: "muted" }, unavailable ? "-" : fmtNumber(quote.volume, 0)),
-          element("td", { class: "muted small" }, unavailable ? "-" : quote.asOf),
-          element(
-            "td",
-            { class: "right" },
-            element(
-              "button",
-              {
-                class: "ghost",
-                type: "button",
-                "aria-label": `Remove ${symbol} from watchlist`,
-                onclick: async () => {
-                  await api.watchlistRemove(symbol);
-                  await drawWatchlist(content);
-                },
-              },
-              "Remove"
-            )
-          )
-        )
-      );
-    }
-    content.replaceChildren(
-      element(
-        "div",
-        { class: "panel table-panel" },
-        element(
-          "table",
-          {},
-          element(
-            "thead",
-            {},
-            element(
-              "tr",
-              {},
-              ...["Symbol", "Company", "Close", "Change", "Change %", "Volume", "As of", ""].map(
-                (label) => element("th", {}, label)
-              )
-            )
-          ),
-          body
-        )
-      )
-    );
-  } catch (error) {
-    content.replaceChildren(errorPanel(`Watchlist unavailable: ${error.message}`));
-  }
 }
 
 let priceChart = null;
@@ -731,7 +560,7 @@ async function renderHoldings() {
   const allocations = element("div");
   const risk = element("div");
   const table = element("div", {}, loadingPanel());
-  const formSlot = element("div");
+  const accounts = element("div");
   const refreshButton = element(
     "button",
     {
@@ -741,12 +570,13 @@ async function renderHoldings() {
         refreshButton.disabled = true;
         try {
           await drawHoldings(totals, allocations, table, true);
+          await drawAccounts(accounts);
         } finally {
           refreshButton.disabled = false;
         }
       },
     },
-    "Refresh EOD data"
+    "Reload positions"
   );
 
   root.append(
@@ -756,21 +586,43 @@ async function renderHoldings() {
       element(
         "div",
         {},
-        element("h1", {}, "Holdings"),
-        element("div", { class: "muted small" }, "Current lots, allocation, and stored market value.")
+        element("h1", {}, "Positions"),
+        element("div", { class: "muted small" }, "Owned assets, account cash, and individual lots.")
       ),
       refreshButton
     ),
     totals,
     risk,
     allocations,
-    formSlot,
+    accounts,
     table
   );
   app.replaceChildren(root);
-  renderHoldingForm(formSlot, async () => drawHoldings(totals, allocations, table));
+  await drawAccounts(accounts);
   await drawHoldings(totals, allocations, table);
-  await drawPortfolioRisk(risk);
+  try {
+    const state = await api.portfolioState();
+    if (state.data.lots.length) await drawPortfolioRisk(risk);
+  } catch (error) {
+    risk.replaceChildren(errorPanel(`Portfolio unavailable: ${error.message}`));
+  }
+}
+
+async function drawAccounts(slot) {
+  try {
+    const { data } = await api.portfolioState();
+    if (!data.accounts.length) { slot.replaceChildren(); return; }
+    slot.replaceChildren(element("section", { class: "panel table-panel" },
+      element("h2", { class: "section-heading" }, "Account cash"),
+      element("table", {},
+        element("thead", {}, element("tr", {}, ...["Account", "Currency", "Cash balance", "Recorded through"].map(label => element("th", {}, label)))),
+        element("tbody", {}, ...data.accounts.map(account => element("tr", {},
+          element("td", {}, account.name), element("td", {}, account.currency),
+          element("td", {}, account.cash == null ? "Unknown" : fmtNumber(Number(account.cash), 2)),
+          element("td", {}, account.asOf || "Unknown")))))));
+  } catch (error) {
+    slot.replaceChildren(errorPanel(`Accounts unavailable: ${error.message}`));
+  }
 }
 
 async function drawPortfolioRisk(slot, period = "1y") {
@@ -787,13 +639,13 @@ async function drawPortfolioRisk(slot, period = "1y") {
         element(
           "div",
           { class: "row between" },
-          element("h2", { id: "portfolio-risk-heading" }, `Portfolio risk - ${period}`),
+          element("h2", { id: "portfolio-risk-heading" }, `Hypothetical history of current holdings - ${period}`),
           periodSelect(period, (value) => drawPortfolioRisk(slot, value))
         ),
         element(
           "div",
           { class: "grid cols-4" },
-          metric("Cumulative return", fmtReturn(row.cumulativeReturn), changeClass(row.cumulativeReturn)),
+          metric("Backcast return", fmtReturn(row.cumulativeReturn), changeClass(row.cumulativeReturn)),
           metric("Annualized volatility", fmtReturn(row.annualizedVolatility, false)),
           metric("Sharpe ratio", fmtNumber(row.sharpeRatio)),
           metric("Maximum drawdown", fmtReturn(row.maxDrawdown), changeClass(row.maxDrawdown))
@@ -845,93 +697,18 @@ async function drawPortfolioRisk(slot, period = "1y") {
   }
 }
 
-function renderHoldingForm(slot, onSaved) {
-  const symbol = element("input", {
-    placeholder: "AAPL",
-    autocomplete: "off",
-    oninput: (event) => {
-      event.target.value = event.target.value.toUpperCase();
-    },
-  });
-  const shares = element("input", { placeholder: "10", inputmode: "decimal" });
-  const cost = element("input", { placeholder: "150.25", inputmode: "decimal" });
-  const account = element(
-    "select",
-    {},
-    element("option", { value: "" }, "Unspecified"),
-    element("option", { value: "taxable" }, "Taxable"),
-    element("option", { value: "ira" }, "IRA"),
-    element("option", { value: "roth" }, "Roth")
-  );
-  const assetClass = element("input", { placeholder: "Equity" });
-  const sector = element("input", { placeholder: "Technology" });
-  const acquired = element("input", { type: "date" });
-  const message = element("div", { class: "small down", hidden: "hidden" });
-  const submit = element("button", { type: "submit" }, "Add holding");
-
-  const form = element(
-    "form",
-    {
-      class: "panel stack",
-      onsubmit: async (event) => {
-        event.preventDefault();
-        message.hidden = true;
-        const ticker = symbol.value.trim().toUpperCase();
-        const quantity = Number.parseFloat(shares.value);
-        const basis = Number.parseFloat(cost.value);
-        if (!ticker) return showFormError(message, "Enter a ticker symbol.");
-        if (!Number.isFinite(quantity) || quantity <= 0) {
-          return showFormError(message, "Shares must be greater than zero.");
-        }
-        if (!Number.isFinite(basis) || basis < 0) {
-          return showFormError(message, "Cost per share cannot be negative.");
-        }
-        submit.disabled = true;
-        try {
-          await api.holdingAdd(ticker, quantity, basis, {
-            account: account.value || null,
-            assetClass: assetClass.value.trim() || null,
-            sector: sector.value.trim() || null,
-            acquired: acquired.value || null,
-          });
-          for (const input of [symbol, shares, cost, assetClass, sector, acquired]) {
-            input.value = "";
-          }
-          account.value = "";
-          await onSaved();
-        } catch (error) {
-          showFormError(message, `Could not add holding: ${error.message}`);
-        } finally {
-          submit.disabled = false;
-        }
-      },
-    },
-    element(
-      "div",
-      { class: "holding-form-grid" },
-      field("Symbol", symbol),
-      field("Shares", shares),
-      field("Cost per share", cost),
-      field("Account", account),
-      field("Asset class", assetClass),
-      field("Sector", sector),
-      field("Acquired", acquired),
-      element("div", { class: "form-action" }, submit)
-    ),
-    message
-  );
-  slot.replaceChildren(form);
-}
-
-function showFormError(node, message) {
-  node.textContent = message;
-  node.hidden = false;
-}
-
 async function drawHoldings(totals, allocations, table, refresh = false) {
   table.replaceChildren(loadingPanel());
   try {
     const data = await api.holdings(refresh);
+    if (!data.holdings.length) {
+      totals.replaceChildren();
+      allocations.replaceChildren();
+      table.replaceChildren(element("div", { class: "panel empty-state" },
+        element("h2", {}, "No positions recorded"),
+        element("p", { class: "muted" }, "Ask your agent to review a portfolio statement and propose an import. Individual lots and cash balances will appear here after it is applied.")));
+      return;
+    }
     const summary = data.totals || {};
     const unpriced = data.unpricedSymbols || [];
     totals.replaceChildren(
@@ -939,7 +716,7 @@ async function drawHoldings(totals, allocations, table, refresh = false) {
         "div",
         { class: "grid cols-4" },
         metric("Total cost basis", fmtMoney(summary.cost)),
-        metric("Priced market value", fmtMoney(summary.value)),
+        metric("Priced securities value", fmtMoney(summary.value)),
         metric("Priced unrealized gain", fmtMoney(summary.gain), changeClass(summary.gain)),
         metric("Priced return", fmtPercent(summary.gainPercent), changeClass(summary.gainPercent))
       ),
@@ -969,7 +746,7 @@ async function drawHoldings(totals, allocations, table, refresh = false) {
         element(
           "tr",
           {},
-          element("td", { colspan: 10, class: "muted empty-cell" }, "No holdings yet.")
+          element("td", { colspan: 10, class: "muted empty-cell" }, "No positions recorded. Ask your agent to review a portfolio statement and propose an import.")
         )
       );
     } else {
@@ -996,23 +773,7 @@ async function drawHoldings(totals, allocations, table, refresh = false) {
             element("td", { class: changeClass(holding.gain) }, fmtMoney(holding.gain)),
             element("td", { class: changeClass(holding.gainPercent) }, fmtPercent(holding.gainPercent)),
             element("td", {}, fmtPercent(holding.weightPercent, false)),
-            element(
-              "td",
-              { class: "right" },
-              element(
-                "button",
-                {
-                  class: "danger",
-                  type: "button",
-                  "aria-label": `Remove ${holding.symbol} holding`,
-                  onclick: async () => {
-                    await api.holdingRemove(holding.id);
-                    await drawHoldings(totals, allocations, table);
-                  },
-                },
-                "Remove"
-              )
-            )
+            element("td", {}, holding.acquired || "Unknown")
           )
         );
       }
@@ -1030,7 +791,7 @@ async function drawHoldings(totals, allocations, table, refresh = false) {
             element(
               "tr",
               {},
-              ...["Symbol", "Account / class", "Shares", "Cost", "Close", "Value", "Gain", "Return", "Weight", ""].map(
+              ...["Symbol", "Account / class", "Shares", "Cost / share", "Close", "Value", "Gain", "Return", "Weight", "Acquired"].map(
                 (label) => element("th", {}, label)
               )
             )
@@ -1109,7 +870,7 @@ async function renderScreener() {
       element(
         "div",
         { class: "muted small" },
-        "Ranks watchlist and holdings by momentum, return, risk, trend, and data coverage."
+        "Ranks held or explicitly selected assets by momentum, return, risk, trend, and data coverage."
       )
     ),
     element("div", { class: "panel" }, form),
@@ -1309,11 +1070,11 @@ function router() {
   app.setAttribute("tabindex", "-1");
   app.focus({ preventScroll: true });
   if (hash === "/") {
-    document.title = "Watchlist - Quant";
-    return renderWatchlist();
+    document.title = "Positions - Quant";
+    return renderHoldings();
   }
   if (hash === "/holdings") {
-    document.title = "Holdings - Quant";
+    document.title = "Positions - Quant";
     return renderHoldings();
   }
   if (hash === "/screener") {

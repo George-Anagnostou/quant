@@ -8,6 +8,26 @@ from quant.market_data import latest_market_snapshot
 TRADING_DAYS_PER_YEAR = 252
 
 
+def aggregate_lots(lots: list[dict]) -> list[dict]:
+    """Aggregate holdings by account/security/currency; preserve individual source lots."""
+    if not lots:
+        return []
+    frame = pl.DataFrame({
+        'account': [lot['account'] for lot in lots],
+        'symbol': [lot['symbol'] for lot in lots],
+        'currency': [lot['currency'] for lot in lots],
+        'quantity': [lot['quantity'] for lot in lots],
+        'totalCost': [lot['totalCost'] for lot in lots],
+        **{dimension:[lot.get(dimension) for lot in lots] for dimension in ('sector','strategy','assetClass')},
+    }).with_columns(pl.col('quantity', 'totalCost').cast(pl.Decimal(38, 12)))
+    rows = frame.group_by('account', 'symbol', 'currency', maintain_order=True).agg(
+        pl.col('quantity').sum(), pl.col('totalCost').sum(), pl.len().alias('lotCount'),
+        *[pl.when(pl.col(dimension).n_unique()==1).then(pl.col(dimension).first()).otherwise(pl.lit('Mixed')).alias(dimension)
+          for dimension in ('sector','strategy','assetClass')]
+    ).with_columns((pl.col('totalCost') / pl.col('quantity')).alias('averageCost')).to_dicts()
+    return [{k: str(v) if k in {'quantity', 'totalCost', 'averageCost'} else v for k,v in row.items()} for row in rows]
+
+
 def analyze_portfolio(
     positions: pl.DataFrame,
     market_history: pl.DataFrame,
@@ -42,7 +62,8 @@ def analyze_portfolio(
 
     analysis = (
         analysis.with_columns(
-            (pl.col("Quantity") * pl.col("Average Cost")).alias("Cost Basis"),
+            (pl.col("Total Cost") if "Total Cost" in positions.columns else
+             pl.col("Quantity") * pl.col("Average Cost")).alias("Cost Basis"),
             (pl.col("Quantity") * pl.col("Last Price")).alias("Market Value"),
         )
         .with_columns(
@@ -1100,3 +1121,101 @@ def _require_columns(
     missing = required.difference(frame.columns)
     if missing:
         raise ValueError(f"Missing {label} columns: {', '.join(sorted(missing))}")
+
+
+def value_portfolio_lots(lots: pl.DataFrame, quotes: pl.DataFrame, valuation_date: date) -> pl.DataFrame:
+    """Value owned lots on one requested session. Never combine mismatched quote dates."""
+    frame = lots.join(quotes, on='symbol', how='left', validate='m:1')
+    return (frame.with_columns(
+        (pl.col('quantity') * pl.col('lastPrice')).alias('marketValue'),
+        (pl.col('quantity') * (pl.col('lastPrice') - pl.col('previousClose'))).alias('dayGain'),
+        (pl.col('lastPrice') / pl.col('previousClose') - 1).alias('dayReturn'),
+        (pl.lit(valuation_date) - pl.col('acquired').str.to_date(strict=False)).dt.total_days().alias('holdingDays'),
+    ).with_columns(
+        (pl.col('marketValue') - pl.col('totalCost')).alias('unrealizedGain'),
+        pl.when(pl.col('totalCost') > 0).then(pl.col('marketValue') / pl.col('totalCost') - 1).otherwise(None).alias('unrealizedReturn'),
+    ))
+
+
+def aggregate_portfolio_values(lots: pl.DataFrame, dimension: str, account_value: float | None) -> pl.DataFrame:
+    """Strict totals and separate priced subtotals; allocation weights include known cash."""
+    return (lots.group_by(dimension, maintain_order=True).agg(
+        pl.len().alias('lotCount'), pl.col('quantity').sum(), pl.col('totalCost').sum(),
+        pl.col('marketValue').sum().alias('pricedMarketValue'),
+        pl.col('marketValue').null_count().alias('unpricedLotCount'),
+        pl.when(pl.col('marketValue').is_not_null().all()).then(pl.col('marketValue').sum()).otherwise(None).alias('marketValue'),
+        pl.when(pl.col('unrealizedGain').is_not_null().all()).then(pl.col('unrealizedGain').sum()).otherwise(None).alias('unrealizedGain'),
+        pl.when(pl.col('dayGain').is_not_null().all()).then(pl.col('dayGain').sum()).otherwise(None).alias('dayGain'),
+    ).with_columns(
+        (pl.col('totalCost') / pl.col('quantity')).alias('averageCost'),
+        pl.when(pl.col('totalCost') > 0).then(pl.col('unrealizedGain') / pl.col('totalCost')).otherwise(None).alias('unrealizedReturn'),
+        (pl.col('marketValue') / account_value if account_value and account_value > 0 else pl.lit(None,dtype=pl.Float64)).alias('weight'),
+    ))
+
+
+def portfolio_value_summary(lots: pl.DataFrame, accounts: list[dict]) -> dict:
+    known_cash = sum(float(a['cash']) for a in accounts if a.get('cash') is not None)
+    cash = known_cash if all(a.get('cash') is not None for a in accounts) else None
+    priced = lots['marketValue'].sum() or 0.0
+    complete = lots['marketValue'].null_count() == 0
+    value = priced if complete else None
+    gain = lots['unrealizedGain'].sum() if complete else None
+    cost = lots['totalCost'].sum() or 0.0
+    return {'totalCost':cost, 'pricedSecuritiesValue':priced, 'securitiesValue':value,
+            'knownCash':known_cash, 'cash':cash, 'accountValue':value+cash if value is not None and cash is not None else None,
+            'unrealizedGain':gain or 0.0 if complete else None,
+            'unrealizedReturn':gain/cost if gain is not None and cost > 0 else None,
+            'unpricedLotCount':lots['marketValue'].null_count()}
+
+
+def portfolio_shock(lots: pl.DataFrame, dimension: str, shocks: dict[str,float]) -> pl.DataFrame:
+    unknown = set(shocks) - set(lots[dimension].to_list())
+    if unknown:
+        raise ValueError(f'Shock targets are not present in this portfolio: {sorted(unknown)}')
+    if lots['marketValue'].null_count():
+        raise ValueError('Scenario requires complete dated valuations')
+    return (lots.with_columns(pl.col(dimension).replace_strict(shocks, default=0.0, return_dtype=pl.Float64).alias('shock'))
+        .with_columns((pl.col('marketValue') * pl.col('shock')).alias('valueChange'))
+        .with_columns((pl.col('marketValue') + pl.col('valueChange')).alias('scenarioValue')))
+
+
+def simulate_lot_sales(lots: pl.DataFrame, sales: pl.DataFrame, sale_date: date) -> pl.DataFrame:
+    if sales['lotId'].n_unique() != sales.height:
+        raise ValueError('Each lot may appear once in a sale simulation')
+    joined = sales.join(lots, left_on='lotId', right_on='id', how='left', validate='1:1')
+    if joined['symbol'].null_count():
+        raise ValueError('Unknown lot in selected account')
+    if joined.filter(pl.col('sellQuantity') > pl.col('quantity')).height:
+        raise ValueError('Sale quantity exceeds selected lot')
+    result = joined.with_columns(
+        (pl.col('sellQuantity') * pl.col('unitPrice') - pl.col('fees')).alias('proceeds'),
+        (pl.col('totalCost') * pl.col('sellQuantity') / pl.col('quantity')).alias('removedCost'),
+        (pl.lit(sale_date) - pl.col('acquired').str.to_date(strict=False)).dt.total_days().alias('holdingDays'),
+    ).with_columns((pl.col('proceeds') - pl.col('removedCost')).alias('realizedGain'))
+    if result.filter((pl.col('proceeds') < 0) | (pl.col('holdingDays') < 0)).height:
+        raise ValueError('Sale precedes acquisition or fees exceed proceeds')
+    return result.select('lotId','symbol','account','strategy','sector','sellQuantity','unitPrice','fees','proceeds','removedCost','realizedGain','holdingDays')
+
+
+def actual_performance_metrics(history: pl.DataFrame, benchmark: pl.DataFrame) -> dict:
+    """Account risk from reconciled flow-adjusted returns, never fixed current weights."""
+    returns = history.select(pl.col('date').alias('Date'), pl.lit('Account').alias('Symbol'), pl.col('return').alias('Return'))
+    summary = summarize_risk_metrics(returns).to_dicts()[0]
+    benchmark_metrics = calculate_benchmark_metrics(returns, benchmark).to_dicts()[0]
+    names = {'Cumulative Return':'timeWeightedReturn','Annualized Volatility':'annualizedVolatility',
+             'Sharpe Ratio':'sharpeRatio','Sortino Ratio':'sortinoRatio','Max Drawdown':'maxDrawdown','Observations':'observations'}
+    result = {target: summary[source] for source,target in names.items()}
+    result.update(beta=benchmark_metrics['Beta'], annualizedAlpha=benchmark_metrics['Annualized Alpha'],
+                  benchmarkObservations=benchmark_metrics['Observations'])
+    return result
+
+
+def account_profit_contributions(opening: pl.DataFrame, closing: pl.DataFrame, events: pl.DataFrame) -> pl.DataFrame:
+    """Dollar P&L attribution: endpoint change + sale proceeds - purchase outlays + income."""
+    symbols = pl.concat([opening.select('symbol'),closing.select('symbol'),events.select('symbol')]).unique()
+    beginning = opening.group_by('symbol').agg(pl.col('marketValue').sum().alias('openingValue'))
+    ending = closing.group_by('symbol').agg(pl.col('marketValue').sum().alias('closingValue'))
+    trading = events.group_by('symbol').agg(pl.col('pnlCash').sum())
+    return (symbols.join(beginning,on='symbol',how='left').join(ending,on='symbol',how='left')
+            .join(trading,on='symbol',how='left').fill_null(0).with_columns(
+                (pl.col('closingValue')-pl.col('openingValue')+pl.col('pnlCash')).alias('profitContribution')).sort('symbol'))

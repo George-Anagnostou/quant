@@ -252,3 +252,14 @@ only when evaluation supports their benefit.
 
 GET `/research/evaluations?runId=ID` compares mean reviewer scores and costs for
 models evaluated on that same frozen case.
+
+## Editable holdings
+
+Use [the portfolio agent guide](PORTFOLIO_AGENT_GUIDE.md) for accounts, individual
+lots, cash, batch preview/apply, sale selection, corrections, and current-state
+snapshot capture. Watchlists are retired. The [tax-lot case study](PORTFOLIO_CASE_STUDY.md)
+explains how to interpret a broker export without importing it.
+
+For the expanded domain contract, use [portfolio analytics and transactions](PORTFOLIO_ANALYTICS.md).
+It covers normalized transaction imports, ticker valuation, strategy/sector allocation,
+NAV capture, reported NAV reconciliation, actual account risk, and sale/scenario simulation.

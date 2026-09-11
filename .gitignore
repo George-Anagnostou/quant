@@ -10,3 +10,6 @@ data/**/*.db*
 data/*.backup
 data/*.lock
 data/artifacts/
+
+# Private sample portfolio; never commit brokerage exports.
+/taxlots.csv
