@@ -365,11 +365,41 @@ class DashboardService:
                     },
                 }
             )
+        unavailable_windows = [
+            window for window in windows if window > analysis.height
+        ]
+        warnings = []
+        if unavailable_windows:
+            warnings.append(
+                {
+                    "code": "partial_data",
+                    "message": "Some requested technical indicators require more stored history",
+                    "symbols": [symbol.upper()],
+                    "details": [
+                        {
+                            "reason": "insufficient_history",
+                            "requestedWindow": window,
+                            "availableObservations": analysis.height,
+                            "firstSession": rows[0]["date"],
+                            "lastSession": rows[-1]["date"],
+                            "fields": [
+                                f"movingAverages.{window}",
+                                f"rollingHighs.{window}",
+                                f"rollingLows.{window}",
+                                f"volumeAverages.{window}",
+                                f"relativeVolumes.{window}",
+                            ],
+                        }
+                        for window in unavailable_windows
+                    ],
+                }
+            )
         return {
             "symbol": symbol.upper(),
             "priceBasis": price,
             "windows": windows,
             "rows": rows,
+            "warnings": warnings,
         }
 
     def security_search(

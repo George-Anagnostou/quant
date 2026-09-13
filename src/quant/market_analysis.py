@@ -70,6 +70,7 @@ def analyze_symbols(
         raise ValueError("Price column must be Close or Adjusted Close")
 
     minimum_sessions = max(max(windows), 2)
+    accepted_minimum_sessions = 1 if allow_missing else 2
     start = datetime.now(EASTERN_TIME).date() - timedelta(
         days=minimum_sessions * 2 + 30
     )
@@ -82,11 +83,24 @@ def analyze_symbols(
         repository,
         required_columns,
         minimum_sessions=minimum_sessions,
+        accepted_minimum_sessions=accepted_minimum_sessions,
         refresh=refresh,
         start=start,
         allow_missing=allow_missing,
         fetch_missing=fetch_missing,
     )
+    valid_history = market_history.drop_nulls(required_columns)
+    available = set(
+        valid_history.group_by("Symbol")
+        .len()
+        .filter(pl.col("len") >= accepted_minimum_sessions)
+        .get_column("Symbol")
+        .to_list()
+    )
+    unavailable = [symbol for symbol in symbols if symbol not in available]
+    if unavailable and not allow_missing:
+        raise RuntimeError(f"Market data unavailable for: {', '.join(unavailable)}")
+    market_history = market_history.filter(pl.col("Symbol").is_in(available))
     if market_history.is_empty():
         raise RuntimeError("Market data unavailable for requested symbols")
     return analyze_market_history(market_history, windows, price_column)

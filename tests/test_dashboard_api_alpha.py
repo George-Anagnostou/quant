@@ -2,7 +2,7 @@ import asyncio
 import json
 import sqlite3
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -295,6 +295,60 @@ class DashboardApiAlphaTests(unittest.TestCase):
 
         self.assertIsNotNone(result.meta.retrievedAt)
         self.assertEqual(result.data["points"][-1]["date"], "2026-08-21")
+
+    @patch("quant.quotes.get_market_history", side_effect=AssertionError("network"))
+    def test_short_history_returns_partial_technicals_in_both_apis(
+        self, provider
+    ) -> None:
+        sessions = 60
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "quant.db"
+            repository = MarketDataRepository(path)
+            repository.save(
+                pl.DataFrame(
+                    {
+                        "Date": [
+                            date(2026, 6, 12) + timedelta(days=index)
+                            for index in range(sessions)
+                        ],
+                        "Symbol": ["SPCX"] * sessions,
+                        "High": [101.0 + index for index in range(sessions)],
+                        "Low": [99.0 + index for index in range(sessions)],
+                        "Close": [100.0 + index for index in range(sessions)],
+                        "Adjusted Close": [
+                            100.0 + index for index in range(sessions)
+                        ],
+                        "Volume": [1_000 + index for index in range(sessions)],
+                    }
+                )
+            )
+            service = DashboardService(
+                UserDataRepository(path, read_only=True),
+                MarketDataRepository(path, read_only=True),
+            )
+
+            with patch.object(api_alpha, "_service", service):
+                alpha_status, alpha = _asgi_get(
+                    server.app,
+                    "/api/alpha/securities/SPCX/technicals",
+                    "windows=20,50,200",
+                )
+            with patch.object(server, "_dashboard_service", service):
+                legacy_status, legacy = _asgi_get(
+                    server.app,
+                    "/api/analysis/SPCX",
+                    "windows=20,50,200&price=adjusted",
+                )
+
+        self.assertEqual(alpha_status, 200)
+        self.assertEqual(legacy_status, 200)
+        self.assertEqual(alpha["data"]["points"][-1]["movingAverages"]["200"], None)
+        self.assertIsNotNone(alpha["data"]["points"][-1]["movingAverages"]["50"])
+        warning = next(item for item in alpha["warnings"] if item["code"] == "partial_data")
+        self.assertEqual(warning["details"][0]["requestedWindow"], 200)
+        self.assertEqual(warning["details"][0]["availableObservations"], sessions)
+        self.assertEqual(legacy["warnings"], [warning])
+        provider.assert_not_called()
 
     def test_empty_portfolio_matches_its_documented_contract(self) -> None:
         with TemporaryDirectory() as directory:

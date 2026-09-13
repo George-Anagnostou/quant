@@ -23,10 +23,20 @@ SYMBOL_PATTERN = re.compile(r"^[A-Z0-9^][A-Z0-9.^=_-]{0,31}$")
 logger = logging.getLogger(__name__)
 
 
+class ApiWarningDetail(BaseModel):
+    reason: Literal["insufficient_history"]
+    requestedWindow: int = Field(ge=1)
+    availableObservations: int = Field(ge=0)
+    firstSession: str
+    lastSession: str
+    fields: list[str]
+
+
 class ApiWarning(BaseModel):
     code: str
     message: str
     symbols: list[str] = Field(default_factory=list)
+    details: list[ApiWarningDetail] = Field(default_factory=list)
 
 
 class Freshness(BaseModel):
@@ -665,6 +675,7 @@ def technicals_alpha(
         retrieved_at=_retrieved_at(service, [symbol]),
         provider="yahoo",
         price_basis=priceBasis,
+        warnings=[ApiWarning.model_validate(warning) for warning in result["warnings"]],
     )
 
 

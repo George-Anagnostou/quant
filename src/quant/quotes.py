@@ -16,6 +16,7 @@ def resolve_market_history(
     start: date | None = None,
     allow_missing: bool = False,
     fetch_missing: bool = True,
+    accepted_minimum_sessions: int | None = None,
 ) -> pl.DataFrame:
     symbols = list(
         dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip())
@@ -65,11 +66,16 @@ def resolve_market_history(
 
     market_data = market_data.filter(pl.col("Symbol").is_in(symbols))
     if not allow_missing:
+        accepted_minimum_sessions = (
+            minimum_sessions
+            if accepted_minimum_sessions is None
+            else accepted_minimum_sessions
+        )
         valid_data = market_data.drop_nulls(required_columns)
         available = set(
             valid_data.group_by("Symbol")
             .len()
-            .filter(pl.col("len") >= minimum_sessions)
+            .filter(pl.col("len") >= accepted_minimum_sessions)
             .get_column("Symbol")
             .to_list()
         )

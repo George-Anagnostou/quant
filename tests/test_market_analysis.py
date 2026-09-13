@@ -60,6 +60,171 @@ class MarketAnalysisUniverseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "positive integers"):
             analyze_symbols(["AAPL"], [True], "Close")
 
+    @patch("quant.quotes.get_market_history", side_effect=AssertionError("network"))
+    def test_returns_available_indicators_for_short_stored_history(
+        self, get_market_history
+    ) -> None:
+        sessions = 60
+        with TemporaryDirectory() as directory:
+            repository = MarketDataRepository(Path(directory) / "quant.db")
+            repository.save(
+                pl.DataFrame(
+                    {
+                        "Date": [
+                            date(2026, 6, 12) + timedelta(days=index)
+                            for index in range(sessions)
+                        ],
+                        "Symbol": ["SPCX"] * sessions,
+                        "High": [101.0 + index for index in range(sessions)],
+                        "Low": [99.0 + index for index in range(sessions)],
+                        "Close": [100.0 + index for index in range(sessions)],
+                        "Adjusted Close": [
+                            100.0 + index for index in range(sessions)
+                        ],
+                        "Volume": [1_000 + index for index in range(sessions)],
+                    }
+                )
+            )
+
+            result = analyze_symbols(
+                ["SPCX"],
+                [20, 50, 200],
+                "Adjusted Close",
+                repository,
+                fetch_missing=False,
+            )
+
+        self.assertEqual(result.height, sessions)
+        self.assertIsNotNone(result.item(-1, "SMA 20"))
+        self.assertIsNotNone(result.item(-1, "SMA 50"))
+        self.assertIsNone(result.item(-1, "SMA 200"))
+        get_market_history.assert_not_called()
+
+    @patch("quant.quotes.get_market_history")
+    def test_accepts_short_history_after_attempting_full_provider_window(
+        self, get_market_history
+    ) -> None:
+        get_market_history.return_value = pl.DataFrame(
+            {
+                "Date": [date(2026, 8, 20), date(2026, 8, 21)],
+                "Symbol": ["SPCX", "SPCX"],
+                "High": [101.0, 102.0],
+                "Low": [99.0, 100.0],
+                "Close": [100.0, 101.0],
+                "Adjusted Close": [100.0, 101.0],
+                "Volume": [1_000, 1_100],
+            }
+        )
+        with TemporaryDirectory() as directory:
+            repository = MarketDataRepository(Path(directory) / "quant.db")
+
+            result = analyze_symbols(
+                ["SPCX"], [20, 50, 200], "Adjusted Close", repository
+            )
+
+        self.assertEqual(result.height, 2)
+        self.assertIsNone(result.item(-1, "SMA 20"))
+        get_market_history.assert_called_once()
+
+    @patch("quant.quotes.get_market_history", side_effect=RuntimeError("offline"))
+    def test_explicit_refresh_still_reports_provider_failure(
+        self, get_market_history
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            repository = MarketDataRepository(Path(directory) / "quant.db")
+            repository.save(
+                pl.DataFrame(
+                    {
+                        "Date": [date(2026, 8, 20), date(2026, 8, 21)],
+                        "Symbol": ["SPCX", "SPCX"],
+                        "High": [101.0, 102.0],
+                        "Low": [99.0, 100.0],
+                        "Close": [100.0, 101.0],
+                        "Adjusted Close": [100.0, 101.0],
+                        "Volume": [1_000, 1_100],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "offline"):
+                analyze_symbols(
+                    ["SPCX"],
+                    [200],
+                    "Adjusted Close",
+                    repository,
+                    refresh=True,
+                )
+
+        get_market_history.assert_called_once()
+
+    @patch("quant.quotes.get_market_history", side_effect=AssertionError("network"))
+    def test_partial_history_does_not_drop_invalid_sessions(
+        self, get_market_history
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            repository = MarketDataRepository(Path(directory) / "quant.db")
+            repository.save(
+                pl.DataFrame(
+                    {
+                        "Date": [
+                            date(2026, 8, 19),
+                            date(2026, 8, 20),
+                            date(2026, 8, 21),
+                        ],
+                        "Symbol": ["SPCX"] * 3,
+                        "High": [101.0, 102.0, 103.0],
+                        "Low": [99.0, 100.0, 101.0],
+                        "Close": [100.0, 101.0, 102.0],
+                        "Adjusted Close": [100.0, 101.0, 102.0],
+                        "Volume": [1_000, None, 1_200],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(ValueError, "prices and volume"):
+                analyze_symbols(
+                    ["SPCX"],
+                    [2],
+                    "Adjusted Close",
+                    repository,
+                    fetch_missing=False,
+                )
+
+        get_market_history.assert_not_called()
+
+    @patch("quant.quotes.get_market_history", side_effect=AssertionError("network"))
+    def test_allow_missing_preserves_one_session_window_one_analysis(
+        self, get_market_history
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            repository = MarketDataRepository(Path(directory) / "quant.db")
+            repository.save(
+                pl.DataFrame(
+                    {
+                        "Date": [date(2026, 8, 21)],
+                        "Symbol": ["SPCX"],
+                        "High": [101.0],
+                        "Low": [99.0],
+                        "Close": [100.0],
+                        "Adjusted Close": [100.0],
+                        "Volume": [1_000],
+                    }
+                )
+            )
+
+            result = analyze_symbols(
+                ["SPCX"],
+                [1],
+                "Adjusted Close",
+                repository,
+                allow_missing=True,
+                fetch_missing=False,
+            )
+
+        self.assertEqual(result.height, 1)
+        self.assertEqual(result.item(0, "SMA 1"), 100.0)
+        get_market_history.assert_not_called()
+
 
 class StoredEodAnalysisTests(unittest.TestCase):
     CURRENT_DATE = date(2026, 9, 1)
