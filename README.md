@@ -23,6 +23,8 @@ for the current S&P universe. Other options are `--host`, `--port`, and
 Keep the server on loopback. The current identity is `local-admin`; new durable
 write endpoints enforce loopback access and same-origin browser requests.
 Hosted accounts and network authentication remain outside this personal release.
+For the supported single-host, private VPS setup, see
+[the deployment guide](docs/VPS_DEPLOYMENT.md).
 
 ## Agent workflow
 
@@ -128,7 +130,7 @@ and ETFs, not a general multi-currency or intraday accounting system.
 ## Tests
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s tests
+uv run python -m unittest discover -s tests
 ```
 
 Tests use temporary storage and mock provider boundaries. No linter, formatter,
