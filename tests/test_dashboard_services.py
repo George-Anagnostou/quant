@@ -173,6 +173,11 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertEqual(result["symbol"], "AAPL")
         self.assertEqual(result["rows"][0]["price"], 124.0)
         self.assertEqual(result["rows"][0]["movingAverages"]["20"], 120.0)
+        self.assertEqual(result["warnings"][0]["code"], "partial_data")
+        detail = result["warnings"][0]["details"][0]
+        self.assertEqual(detail["requestedWindow"], 20)
+        self.assertEqual(detail["availableObservations"], 1)
+        self.assertIn("movingAverages.20", detail["fields"])
 
     def test_searches_local_securities_and_only_uses_remote_when_requested(
         self,
