@@ -179,7 +179,7 @@ are covered in [the analytics extension](PORTFOLIO_ANALYTICS.md).
 Limits: 2,000 active lots, 100 accounts, 1,000 actions per batch, and 8 MiB per audit
 record. History pages are bounded; reduce `--limit` when a page is too large.
 
-Schema v3 upgrades v1/v2 non-destructively with a verified backup. Legacy positions
+Schema v4 upgrades v1 through v3 non-destructively with a verified backup. Legacy positions
 keep their IDs and acquire explicit metadata when next written. Retired watchlist
 rows are preserved in `retired_watchlist` solely for recovery, with no API or
 runtime feature using them. Restart the server to apply the migration. Frozen

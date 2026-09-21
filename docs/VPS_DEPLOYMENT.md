@@ -46,11 +46,13 @@ uv run quant query quality
 uv run quant query gaps
 ```
 
-`/api/health` only confirms that the HTTP process responds. Review `quality`,
-`gaps`, and ingestion-run status to determine whether data is current and whether
-provider failures or coverage gaps remain. Failed jobs are retained as durable,
-visible failures; a later execution may retry them without silently treating them
-as complete.
+`/api/health` only confirms that the HTTP process responds. `quality.workers`
+contains the minute-level `ingestion_worker` heartbeat and the per-session
+`equity_daily` database quick-check result, tracked-symbol freshness count, and open
+issue count. Review it with `gaps` and ingestion-run status to determine whether data
+is current and whether provider failures or coverage gaps remain. Failed jobs are
+retained as durable, visible failures; a later execution may retry them without
+silently treating them as complete.
 
 Local verified backups are not disaster recovery. Select an off-host destination
 and retention policy before relying on the VPS for irreplaceable personal records.

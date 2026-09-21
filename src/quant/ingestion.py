@@ -23,6 +23,8 @@ from quant.user_data import UserDataRepository
 logger = logging.getLogger(__name__)
 MAX_INDIVIDUAL_FALLBACKS = 5
 MAX_PROVIDER_CALLS_PER_EXECUTION = 100
+EQUITY_WORKER_STATUS = "equity_daily"
+INGESTION_WORKER_STATUS = "ingestion_worker"
 
 
 class ProviderCallBudgetExceeded(RuntimeError):
@@ -374,6 +376,7 @@ class IngestionWorker:
     def _loop(self):
         last_session = None
         while not self.stop_event.is_set():
+            latest = None
             try:
                 initialize_database(self.path)
                 with database_connection(self.path,read_only=True) as db:
@@ -394,9 +397,23 @@ class IngestionWorker:
                     backup = self.path.with_name(f"{self.path.name}.{latest.isoformat()}.backup")
                     if not backup.exists():
                         backup_database(self.path, backup)
+                    self._check_equity_data(latest)
                     last_session = latest
-            except Exception:
+                self._record_status(
+                    INGESTION_WORKER_STATUS,
+                    "ok",
+                    {"latestSession": latest.isoformat()},
+                )
+            except Exception as error:
                 logger.exception("Background synchronization failed")
+                try:
+                    self._record_status(
+                        INGESTION_WORKER_STATUS,
+                        "error",
+                        {"error": type(error).__name__},
+                    )
+                except Exception:
+                    logger.exception("Worker status recording failed")
             self.stop_event.wait(60)
 
     def _scheduled_run_exists(self, latest):
@@ -404,6 +421,53 @@ class IngestionWorker:
         with database_connection(self.path, read_only=True) as db:
             return db.execute("SELECT 1 FROM ingestion_runs WHERE universe_source!='explicit' AND started_at>=? LIMIT 1",
                 (available_at,)).fetchone() is not None
+
+    def _check_equity_data(self, latest):
+        with database_connection(self.path, read_only=True) as db:
+            database_check = db.execute("PRAGMA quick_check").fetchone()[0]
+            rows = db.execute(
+                """SELECT s.symbol, MAX(b.session_date) AS last_session
+                FROM sync_coverage c
+                JOIN securities s ON s.symbol=c.symbol
+                LEFT JOIN daily_bars b ON b.security_id=s.id AND b.provider='yahoo'
+                WHERE s.calendar='XNYS'
+                GROUP BY s.symbol"""
+            ).fetchall()
+            open_issues = db.execute(
+                "SELECT COUNT(*) FROM data_issues WHERE resolved_at IS NULL"
+            ).fetchone()[0]
+        expected = latest.isoformat()
+        stale = sum(
+            row["last_session"] is None or row["last_session"] < expected
+            for row in rows
+        )
+        status = (
+            "error"
+            if database_check != "ok"
+            else "warning"
+            if stale or open_issues
+            else "ok"
+        )
+        self._record_status(
+            EQUITY_WORKER_STATUS,
+            status,
+            {
+                "databaseCheck": database_check,
+                "expectedSession": expected,
+                "trackedSymbols": len(rows),
+                "staleSymbols": stale,
+                "openIssues": open_issues,
+            },
+        )
+
+    def _record_status(self, name, status, detail):
+        with database_connection(self.path) as db:
+            db.execute(
+                """INSERT INTO worker_status VALUES (?,?,?,?)
+                ON CONFLICT(name) DO UPDATE SET checked_at=excluded.checked_at,
+                status=excluded.status,detail=excluded.detail""",
+                (name, utc_now(), status, json.dumps(detail)),
+            )
 
 
 def _null_invalid_ohlc_fields(frame):

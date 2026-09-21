@@ -46,5 +46,5 @@
   availability/retrieval-time, and current/historical-universe distinctions.
 - Frozen databases in `data/artifacts/` are generated evidence copies. Do not commit
   them or modify them after publication. Replay requires the retained method source.
-- Schema v1 upgrades automatically with a verified backup. Never delete personal
+- Schemas v1 through v3 upgrade automatically with a verified backup. Never delete personal
   data to apply a supported migration. Do not run provider-backed work in unit tests.
