@@ -130,7 +130,7 @@ and ETFs, not a general multi-currency or intraday accounting system.
 ## Tests
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s tests
+uv run python -m unittest discover -s tests
 ```
 
 Tests use temporary storage and mock provider boundaries. No linter, formatter,

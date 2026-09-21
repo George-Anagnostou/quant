@@ -3,8 +3,8 @@
 ## Commands
 
 - Use Python 3.14 through `uv`; install/sync with `uv sync`.
-- Run all tests with `PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s tests`.
-- Run one test with `PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest tests.test_market_data.LatestMarketDataTests.test_downloads_all_symbols_in_one_batch`.
+- Run all tests with `uv run python -m unittest discover -s tests`.
+- Run one test with `uv run python -m unittest tests.test_market_data.LatestMarketDataTests.test_downloads_all_symbols_in_one_batch`.
 - `uv run quant serve` starts a background ingestion worker and serves the webpage and API at `http://127.0.0.1:8001`; add `--no-sync` for tests or offline use and `--database PATH` for an isolated database.
 - `uv run quant query ...` is the machine-readable `/api/alpha` client. It must not read SQLite, call providers, or recalculate financial results locally.
 - `uv run quant data status` queries stored coverage through the running API. Provider synchronization belongs to the background ingestion worker, not API read requests. Explicit POST requests can enqueue durable work.
