@@ -11,8 +11,9 @@ trading execution, an embedded agent runner, and broad intraday ingestion are de
 
 - Non-destructive v1-to-v2 migration with verified online backup.
 - A provider protocol, one locked ingestion writer, durable runs/jobs/issues,
-  interrupted-job recovery, bounded provider retries, daily scheduling, and explicit
-  queued sync requests. Existing data is served during synchronization.
+  recovery of every interrupted run, bounded per-execution provider retries, daily
+  scheduling, and explicit queued sync requests. Existing data is served during
+  synchronization.
 - Missing-prefix, internal-session-gap and correction-overlap planning. Historical
   revisions must cover previously stored dates and preserve non-null observations
   before publication; failed reconciliation leaves old prices intact.
@@ -55,6 +56,9 @@ trading execution, an embedded agent runner, and broad intraday ingestion are de
   explicit reviewer scores; Quant does not automatically certify investment ideas.
 - Single-host file locks and SQLite are intentional. No Redis, Celery, PostgreSQL,
   MCP adapter, or embedded model SDK is required.
+- The supported first deployment is one private VPS process under `systemd`, bound
+  to loopback. Local backups require a separately chosen off-host replication and
+  retention policy for disaster recovery.
 
 ## Next expansion gates
 

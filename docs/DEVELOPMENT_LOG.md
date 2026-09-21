@@ -3,6 +3,24 @@
 This log records delivered behavior, the reason for each change, validation, and
 remaining limits. Commit history preserves the corresponding implementation.
 
+## 2026-09-21 - Ingestion recovery and VPS operating baseline
+
+**Why:** A long-running private VPS needs bounded provider behavior, durable recovery,
+and data-quality issues that reflect current observations rather than stale failures.
+
+**Changed:** Grouped provider batches by requested start date, isolated recoverable
+batch failures, bounded requests per worker execution, and retried only small partial
+batch omissions. Recovery now resumes every interrupted run. Impossible open/high/low
+values are quarantined while valid closes remain available; replacement histories
+cannot erase previously valid observations. Quality audits atomically reconcile stale
+gap and incomplete-bar issues. Added a one-process, loopback-only `systemd` template
+and operations guide.
+
+**Limits:** SQLite and the ingestion lock remain single-host mechanisms. Process
+health does not prove current data; operators must inspect quality, gaps, and durable
+ingestion runs. Verified daily backups remain local until off-host replication and a
+retention policy are configured.
+
 ## 2026-09-06 — Durable data and reproducible research foundation
 
 Commit: `d070761` (`Add durable ingestion and reproducible research workflows`).

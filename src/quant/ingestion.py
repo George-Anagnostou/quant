@@ -22,7 +22,7 @@ from quant.user_data import UserDataRepository
 
 logger = logging.getLogger(__name__)
 MAX_INDIVIDUAL_FALLBACKS = 5
-MAX_PROVIDER_CALLS_PER_RUN = 100
+MAX_PROVIDER_CALLS_PER_EXECUTION = 100
 
 
 class ProviderCallBudgetExceeded(RuntimeError):
@@ -67,7 +67,7 @@ class IngestionService:
         self.path, self.provider, self.sleep = path, provider or YahooProvider(), sleep
         self.market = MarketDataRepository(path)
         self.known_us_symbols = set()
-        self.provider_calls_remaining = 0
+        self.provider_calls_remaining: int | None = None
         self.provider_budget_warning_logged = False
 
     def synchronize(self, *, horizon=None, batch_size=50, today=None,
@@ -135,9 +135,11 @@ class IngestionService:
 
     def _recover_running(self, batch_size, latest):
         with database_connection(self.path, read_only=True) as db:
-            previous = db.execute("SELECT id FROM ingestion_runs WHERE status='running' ORDER BY started_at LIMIT 1").fetchone()
-        if previous:
-            self._execute(previous["id"], batch_size, latest)
+            running = db.execute(
+                "SELECT id FROM ingestion_runs WHERE status='running' ORDER BY started_at,id"
+            ).fetchall()
+        for run in running:
+            self._execute(run["id"], batch_size, latest)
 
     def plan(self, symbol, horizon, latest):
         history = self.market.load([symbol], provider=self.provider.name)
@@ -162,7 +164,7 @@ class IngestionService:
         return min(starts), reasons
 
     def _execute(self, run_id, batch_size, latest):
-        self.provider_calls_remaining = MAX_PROVIDER_CALLS_PER_RUN
+        self.provider_calls_remaining = MAX_PROVIDER_CALLS_PER_EXECUTION
         self.provider_budget_warning_logged = False
         with database_connection(self.path, read_only=True) as db:
             jobs = [dict(r) for r in db.execute("SELECT * FROM ingestion_jobs WHERE run_id=? AND status!='complete' ORDER BY start_date,symbol", (run_id,))]
@@ -205,6 +207,7 @@ class IngestionService:
         with database_connection(self.path) as db:
             failures = db.execute("SELECT COUNT(*) FROM ingestion_jobs WHERE run_id=? AND status!='complete'", (run_id,)).fetchone()[0]
             db.execute("UPDATE ingestion_runs SET status=?,finished_at=? WHERE id=?", ("partial" if failures else "complete", utc_now(), run_id))
+        self.provider_calls_remaining = None
 
     def _fetch_batch(self, batch):
         try:
@@ -261,9 +264,10 @@ class IngestionService:
                 self.sleep(0.25 * 2**attempt)
 
     def _provider_history(self, symbols, start):
-        if self.provider_calls_remaining <= 0:
-            raise ProviderCallBudgetExceeded("Provider call budget exhausted")
-        self.provider_calls_remaining -= 1
+        if self.provider_calls_remaining is not None:
+            if self.provider_calls_remaining <= 0:
+                raise ProviderCallBudgetExceeded("Provider call budget exhausted")
+            self.provider_calls_remaining -= 1
         return self.provider.history(symbols, start)
 
     def _log_provider_budget_exhausted(self):

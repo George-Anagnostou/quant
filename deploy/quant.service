@@ -1,0 +1,23 @@
+[Unit]
+Description=Quant local research service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=quant
+Group=quant
+WorkingDirectory=/opt/quant
+StateDirectory=quant
+StateDirectoryMode=0750
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/quant/.venv/bin/quant serve --host 127.0.0.1 --port 8001 --database /var/lib/quant/quant.db
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

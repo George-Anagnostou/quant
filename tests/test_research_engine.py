@@ -290,7 +290,35 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(sum(job["status"] == "complete" for job in jobs), 1)
         self.assertEqual(sum(job["status"] == "failed" for job in jobs), 6)
 
-    @patch("quant.ingestion.MAX_PROVIDER_CALLS_PER_RUN", 3)
+    def test_small_partial_batch_retries_missing_symbols_individually(self):
+        symbols = ["FIRST", "SECOND"]
+        day = date(2026, 8, 31)
+        provider = FakeProvider(bars([day], tuple(symbols)))
+
+        def partial(symbols, start):
+            provider.calls.append((symbols, start))
+            return provider.frame.filter(pl.col("Symbol") == symbols[0])
+
+        provider.history = partial
+        with database_connection(self.path) as db:
+            db.execute(
+                "INSERT INTO ingestion_runs VALUES ('small-partial',?,NULL,'running','explicit')",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
+            db.executemany(
+                "INSERT INTO ingestion_jobs(run_id,symbol,start_date,reasons,status) VALUES ('small-partial',?,'2026-08-31','[]','pending')",
+                [(symbol,) for symbol in symbols],
+            )
+
+        service = IngestionService(self.path, provider, sleep=lambda _: None)
+        service._execute("small-partial", 50, day)
+
+        self.assertEqual(provider.calls, [(["FIRST", "SECOND"], day), (["SECOND"], day)])
+        self.assertTrue(
+            all(job["status"] == "complete" for job in service.run("small-partial")["jobs"])
+        )
+
+    @patch("quant.ingestion.MAX_PROVIDER_CALLS_PER_EXECUTION", 3)
     def test_provider_call_budget_applies_across_start_date_groups(self):
         symbols = [f"S{index}" for index in range(5)]
         days = [date(2026, 8, 24 + index) for index in range(5)]
@@ -317,6 +345,33 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len(provider.calls), 3)
         self.assertEqual(sum(job["status"] == "complete" for job in jobs), 3)
         self.assertEqual(sum(job["status"] == "failed" for job in jobs), 2)
+
+    @patch("quant.ingestion.MAX_PROVIDER_CALLS_PER_EXECUTION", 1)
+    def test_provider_call_budget_resets_for_each_execution(self):
+        day = date(2026, 8, 31)
+        provider = FakeProvider(bars([day], ("FIRST", "SECOND")))
+        with database_connection(self.path) as db:
+            db.executemany(
+                "INSERT INTO ingestion_runs VALUES (?,?,NULL,'running','explicit')",
+                [
+                    ("first-run", datetime.now(timezone.utc).isoformat()),
+                    ("second-run", datetime.now(timezone.utc).isoformat()),
+                ],
+            )
+            db.executemany(
+                "INSERT INTO ingestion_jobs(run_id,symbol,start_date,reasons,status) VALUES (?,?,?,'[]','pending')",
+                [
+                    ("first-run", "FIRST", day.isoformat()),
+                    ("second-run", "SECOND", day.isoformat()),
+                ],
+            )
+
+        service = IngestionService(self.path, provider, sleep=lambda _: None)
+        service._execute("first-run", 50, day)
+        service._execute("second-run", 50, day)
+
+        self.assertEqual(provider.calls, [(["FIRST"], day), (["SECOND"], day)])
+        self.assertIsNone(service.provider_calls_remaining)
 
     def test_worker_recognizes_persisted_scheduled_attempt(self):
         session = date(2026, 8, 31)
@@ -353,6 +408,32 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(service.run("explicit-running")["status"], "complete")
         self.assertEqual(len(provider.calls), 1)
         self.assertTrue(IngestionWorker(self.path)._scheduled_run_exists(session))
+
+    def test_recovery_processes_every_running_run(self):
+        session = date(2026, 8, 31)
+        provider = FakeProvider(bars([session], ("FIRST", "SECOND")))
+        with database_connection(self.path) as db:
+            db.executemany(
+                "INSERT INTO ingestion_runs VALUES (?,?,NULL,'running','explicit')",
+                [
+                    ("first-running", "2026-09-01T00:01:00+00:00"),
+                    ("second-running", "2026-09-01T00:02:00+00:00"),
+                ],
+            )
+            db.executemany(
+                "INSERT INTO ingestion_jobs(run_id,symbol,start_date,reasons,status) VALUES (?,?,?,'[]','running')",
+                [
+                    ("first-running", "FIRST", session.isoformat()),
+                    ("second-running", "SECOND", session.isoformat()),
+                ],
+            )
+
+        service = IngestionService(self.path, provider, sleep=lambda _: None)
+        service.recover(batch_size=50, today=session)
+
+        self.assertEqual(service.run("first-running")["status"], "complete")
+        self.assertEqual(service.run("second-running")["status"], "complete")
+        self.assertEqual(provider.calls, [(["FIRST"], session), (["SECOND"], session)])
 
     def test_ingestion_quarantines_impossible_provider_ohlc(self):
         days = sessions(date(2026, 8, 3), date(2026, 8, 5))
