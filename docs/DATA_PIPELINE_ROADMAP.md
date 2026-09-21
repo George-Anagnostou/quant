@@ -20,6 +20,8 @@ trading execution, an embedded agent runner, and broad intraday ingestion are de
 - Provider-symbol mapping, explicit security metadata, bounded XNYS sessions,
   per-security freshness, quality inspection, and verified daily backups.
 - Stored-only legacy and alpha analytical reads, plus explicit transient research.
+- A durable worker heartbeat with a source-named `equity_daily` database and freshness
+  check. Additional providers can add checks without changing the status contract.
 
 ## Implemented research workflow
 

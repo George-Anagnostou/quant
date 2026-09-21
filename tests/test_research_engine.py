@@ -18,6 +18,7 @@ from quant.fundamentals import FundamentalService, SECProvider
 from quant.ingestion import IngestionService, IngestionWorker
 from quant.ledger import ledger_performance, money_weighted_return
 from quant.market_store import MarketDataRepository
+from quant.platform_service import PlatformService
 from quant.record_store import RecordRepository
 from quant.workflows import ResearchWorkflow
 
@@ -73,12 +74,28 @@ class EngineTests(unittest.TestCase):
         initialize_database(old)
         with database_connection(old,read_only=True) as db:
             self.assertEqual(db.execute("SELECT symbol FROM retired_watchlist").fetchone()[0],"AAPL")
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],3)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],4)
         copies=list(old.parent.glob("old.db.v1-*.backup"))
         self.assertEqual(len(copies),1)
         with closing(sqlite3.connect(copies[0])) as db:
             self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0],1)
             self.assertEqual(db.execute("PRAGMA integrity_check").fetchone()[0],"ok")
+
+    def test_migration_from_v3_adds_worker_status(self):
+        with database_connection(self.path) as db:
+            db.execute("DROP TABLE worker_status")
+            db.execute("PRAGMA user_version=3")
+
+        initialize_database(self.path)
+
+        with database_connection(self.path, read_only=True) as db:
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(
+                db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='worker_status'"
+                ).fetchone()[0],
+                "worker_status",
+            )
 
     def test_backup_does_not_overwrite_existing_destination(self):
         destination=Path(self.directory.name)/"backup.db"
@@ -386,6 +403,56 @@ class EngineTests(unittest.TestCase):
                 "INSERT INTO ingestion_runs VALUES ('scheduled','2026-09-01T00:01:00+00:00',NULL,'partial','stored')"
             )
         self.assertTrue(worker._scheduled_run_exists(session))
+
+    def test_equity_worker_records_database_and_freshness_status(self):
+        days = self.seed()
+        with database_connection(self.path) as db:
+            db.executemany(
+                "INSERT INTO sync_coverage VALUES (?,?,?)",
+                [
+                    (symbol, days[0].isoformat(), datetime.now(timezone.utc).isoformat())
+                    for symbol in ("AAPL", "SPY")
+                ],
+            )
+
+        worker = IngestionWorker(self.path)
+        worker._check_equity_data(days[-1])
+        worker._record_status(
+            "ingestion_worker", "ok", {"latestSession": days[-1].isoformat()}
+        )
+
+        statuses = {
+            status["name"]: status
+            for status in PlatformService(self.path).quality()["workers"]
+        }
+        self.assertEqual(statuses["ingestion_worker"]["status"], "ok")
+        status = statuses["equity_daily"]
+        self.assertEqual(status["status"], "ok")
+        self.assertEqual(
+            status["detail"],
+            {
+                "databaseCheck": "ok",
+                "expectedSession": days[-1].isoformat(),
+                "trackedSymbols": 2,
+                "staleSymbols": 0,
+                "openIssues": 0,
+            },
+        )
+
+        with database_connection(self.path) as db:
+            db.execute(
+                "DELETE FROM daily_bars WHERE session_date=? AND security_id=(SELECT id FROM securities WHERE symbol='AAPL')",
+                (days[-1].isoformat(),),
+            )
+        worker._check_equity_data(days[-1])
+
+        status = next(
+            status
+            for status in PlatformService(self.path).quality()["workers"]
+            if status["name"] == "equity_daily"
+        )
+        self.assertEqual(status["status"], "warning")
+        self.assertEqual(status["detail"]["staleSymbols"], 1)
 
     def test_running_explicit_job_recovers_despite_scheduled_attempt(self):
         session = date(2026, 8, 31)
@@ -809,6 +876,33 @@ def request(app,path,method="GET",body=None,client="127.0.0.1",query=""):
 class EngineAPITests(unittest.TestCase):
     setUp = EngineTests.setUp
     seed = EngineTests.seed
+
+    def test_quality_api_exposes_equity_worker_status(self):
+        from quant.dashboard import api_alpha, server
+        from quant.dashboard.services import DashboardService
+        from quant.user_data import UserDataRepository
+
+        days = self.seed()
+        with database_connection(self.path) as db:
+            db.executemany(
+                "INSERT INTO sync_coverage VALUES (?,?,?)",
+                [
+                    (symbol, days[0].isoformat(), datetime.now(timezone.utc).isoformat())
+                    for symbol in ("AAPL", "SPY")
+                ],
+            )
+        IngestionWorker(self.path)._check_equity_data(days[-1])
+        service = DashboardService(
+            UserDataRepository(self.path, read_only=True),
+            MarketDataRepository(self.path, read_only=True),
+        )
+
+        with patch.object(api_alpha, "_service", service):
+            status, body = request(server.app, "/api/alpha/data/quality")
+
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["data"]["workers"][0]["name"], "equity_daily")
+        self.assertEqual(body["data"]["workers"][0]["status"], "ok")
 
     def test_malformed_evidence_returns_validation_error_without_writing(self):
         from quant.dashboard import api_alpha, server

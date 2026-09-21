@@ -1,5 +1,6 @@
 """Application boundary for discovery, durable jobs and research workflows."""
 from datetime import date
+import json
 from pathlib import Path
 
 from quant.calendars import CALENDAR_VERSION, freshness, sessions
@@ -88,10 +89,11 @@ class PlatformService:
         with database_connection(self.path,read_only=True) as db:
             metadata={r["symbol"]:dict(r) for r in db.execute("SELECT symbol,currency,instrument_type,calendar FROM securities")}
             latest=db.execute("SELECT * FROM ingestion_runs ORDER BY started_at DESC LIMIT 1").fetchone()
+            workers=[{**dict(row),"detail":json.loads(row["detail"])} for row in db.execute("SELECT * FROM worker_status ORDER BY name")]
         return {"securities":[{"symbol":r["Symbol"],"firstSession":r["First Session"].isoformat(),
             "lastSession":r["Last Session"].isoformat(),"sessionCount":r["Session Count"],
             "metadata":metadata[r["Symbol"]],"freshness":freshness(r["Last Session"].isoformat(),metadata[r["Symbol"]]["calendar"])} for r in coverage.to_dicts()],
-            "lastIngestion":dict(latest) if latest else None}
+            "lastIngestion":dict(latest) if latest else None,"workers":workers}
 
     def request_sync(self,key,symbols,horizon):
         if horizon is not None:

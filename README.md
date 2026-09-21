@@ -99,7 +99,7 @@ configure `QUANT_SEC_USER_AGENT` with an identifying name and contact email.
 
 ## Data and financial conventions
 
-`data/quant.db` is authoritative. Schemas v1 and v2 upgrade non-destructively to v3 with a
+`data/quant.db` is authoritative. Schemas v1 through v3 upgrade non-destructively to v4 with a
 verified pre-migration backup. Unknown/unversioned database layouts are not
 silently converted. SQLite uses WAL, foreign keys, short transactions, and
 provider-separated bars. Online backups use SQLite's backup interface and verify

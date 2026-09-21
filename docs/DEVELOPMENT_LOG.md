@@ -3,6 +3,21 @@
 This log records delivered behavior, the reason for each change, validation, and
 remaining limits. Commit history preserves the corresponding implementation.
 
+## 2026-09-21 - Equity worker heartbeat and quality status
+
+**Why:** A hosted long-running process needs a durable signal that its ingestion
+worker is active, plus a small check that daily equity data remains usable.
+
+**Changed:** Added a non-destructive schema v4 worker-status table. The worker writes
+an `ingestion_worker` heartbeat every minute and an `equity_daily` check once per
+completed XNYS session. The equity check records SQLite quick-check output, tracked
+symbol freshness, and unresolved issue counts. `data/quality` exposes named worker
+statuses so additional data sources can add their own checks later.
+
+**Limits:** The equity check is intentionally advisory. It does not fetch a provider,
+repair data, infer missing sessions for unverified calendars, or establish data
+quality for future providers.
+
 ## 2026-09-21 - Ingestion recovery and VPS operating baseline
 
 **Why:** A long-running private VPS needs bounded provider behavior, durable recovery,
