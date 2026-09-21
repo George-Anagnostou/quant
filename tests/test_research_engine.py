@@ -15,7 +15,7 @@ from quant.contracts import SnapshotInput, RunInput, ReportInput, EvidenceInput,
 from quant.database import initialize_database, database_connection, backup_database, _create_schema
 from quant.discovery import DiscoveryService, momentum_experiment
 from quant.fundamentals import FundamentalService, SECProvider
-from quant.ingestion import IngestionService
+from quant.ingestion import IngestionService, IngestionWorker
 from quant.ledger import ledger_performance, money_weighted_return
 from quant.market_store import MarketDataRepository
 from quant.record_store import RecordRepository
@@ -170,6 +170,270 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(run["status"],"complete")
         self.assertEqual(MarketDataRepository(self.path).load(["AAPL"]).height,len(days))
 
+    def test_ingestion_batches_symbols_by_requested_start(self):
+        old_day = date(2025, 1, 2)
+        recent_day = date(2026, 8, 31)
+        source = pl.concat(
+            [bars([old_day], ("OLD",)), bars([recent_day], ("CURRENT", "SAME"))]
+        )
+        provider = FakeProvider(source)
+        with database_connection(self.path) as db:
+            db.execute(
+                "INSERT INTO ingestion_runs VALUES ('starts',?,NULL,'running','explicit')",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
+            db.executemany(
+                "INSERT INTO ingestion_jobs(run_id,symbol,start_date,reasons,status) VALUES ('starts',?,?,?,'pending')",
+                [
+                    ("OLD", old_day.isoformat(), "[]"),
+                    ("CURRENT", recent_day.isoformat(), "[]"),
+                    ("SAME", recent_day.isoformat(), "[]"),
+                ],
+            )
+
+        IngestionService(self.path, provider, sleep=lambda _: None)._execute(
+            "starts", 50, recent_day
+        )
+
+        self.assertEqual(
+            provider.calls,
+            [(["OLD"], old_day), (["CURRENT", "SAME"], recent_day)],
+        )
+
+    def test_systemic_batch_failure_has_bounded_provider_calls(self):
+        symbols = [f"S{index}" for index in range(8)]
+        provider = FakeProvider(bars([date(2026, 8, 31)], tuple(symbols)))
+        market = MarketDataRepository(self.path)
+        market.save(bars([date(2026, 8, 28)], tuple(symbols)))
+        before = market.load(symbols).to_dicts()
+
+        def fail(symbols, start):
+            provider.calls.append((symbols, start))
+            raise RuntimeError("offline")
+
+        provider.history = fail
+        with database_connection(self.path) as db:
+            db.execute(
+                "INSERT INTO ingestion_runs VALUES ('failed-batch',?,NULL,'running','explicit')",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
+            db.executemany(
+                "INSERT INTO ingestion_jobs(run_id,symbol,start_date,reasons,status) VALUES ('failed-batch',?,'2026-08-31','[]','pending')",
+                [(symbol,) for symbol in symbols],
+            )
+
+        service = IngestionService(self.path, provider, sleep=lambda _: None)
+        service._execute("failed-batch", 50, date(2026, 8, 31))
+
+        self.assertEqual(len(provider.calls), 3)
+        self.assertEqual(service.run("failed-batch")["status"], "partial")
+        self.assertTrue(
+            all(job["status"] == "failed" for job in service.run("failed-batch")["jobs"])
+        )
+        self.assertEqual(market.load(symbols).to_dicts(), before)
+
+    def test_batch_split_isolates_one_bad_symbol(self):
+        symbols = ["BAD", "GOOD1", "GOOD2", "GOOD3"]
+        day = date(2026, 8, 31)
+        provider = FakeProvider(bars([day], tuple(symbols)))
+
+        def selective(symbols, start):
+            provider.calls.append((symbols, start))
+            if "BAD" in symbols:
+                raise RuntimeError("bad symbol")
+            return provider.frame.filter(pl.col("Symbol").is_in(symbols))
+
+        provider.history = selective
+        with database_connection(self.path) as db:
+            db.execute(
+                "INSERT INTO ingestion_runs VALUES ('bad-symbol',?,NULL,'running','explicit')",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
+            db.executemany(
+                "INSERT INTO ingestion_jobs(run_id,symbol,start_date,reasons,status) VALUES ('bad-symbol',?,'2026-08-31','[]','pending')",
+                [(symbol,) for symbol in symbols],
+            )
+
+        service = IngestionService(self.path, provider, sleep=lambda _: None)
+        service._execute("bad-symbol", 50, day)
+
+        jobs = {job["symbol"]: job["status"] for job in service.run("bad-symbol")["jobs"]}
+        self.assertEqual(len(provider.calls), 5)
+        self.assertEqual(jobs["BAD"], "failed")
+        self.assertTrue(all(jobs[symbol] == "complete" for symbol in symbols[1:]))
+
+    def test_large_partial_batch_suppresses_individual_retries(self):
+        symbols = [f"S{index}" for index in range(7)]
+        day = date(2026, 8, 31)
+        provider = FakeProvider(bars([day], tuple(symbols)))
+
+        def partial(symbols, start):
+            provider.calls.append((symbols, start))
+            return provider.frame.filter(pl.col("Symbol") == symbols[0])
+
+        provider.history = partial
+        with database_connection(self.path) as db:
+            db.execute(
+                "INSERT INTO ingestion_runs VALUES ('partial-batch',?,NULL,'running','explicit')",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
+            db.executemany(
+                "INSERT INTO ingestion_jobs(run_id,symbol,start_date,reasons,status) VALUES ('partial-batch',?,'2026-08-31','[]','pending')",
+                [(symbol,) for symbol in symbols],
+            )
+
+        service = IngestionService(self.path, provider, sleep=lambda _: None)
+        service._execute("partial-batch", 50, day)
+
+        jobs = service.run("partial-batch")["jobs"]
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(sum(job["status"] == "complete" for job in jobs), 1)
+        self.assertEqual(sum(job["status"] == "failed" for job in jobs), 6)
+
+    @patch("quant.ingestion.MAX_PROVIDER_CALLS_PER_RUN", 3)
+    def test_provider_call_budget_applies_across_start_date_groups(self):
+        symbols = [f"S{index}" for index in range(5)]
+        days = [date(2026, 8, 24 + index) for index in range(5)]
+        provider = FakeProvider(
+            pl.concat([bars([day], (symbol,)) for symbol, day in zip(symbols, days)])
+        )
+        with database_connection(self.path) as db:
+            db.execute(
+                "INSERT INTO ingestion_runs VALUES ('budget',?,NULL,'running','explicit')",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
+            db.executemany(
+                "INSERT INTO ingestion_jobs(run_id,symbol,start_date,reasons,status) VALUES ('budget',?,?,?,'pending')",
+                [
+                    (symbol, day.isoformat(), "[]")
+                    for symbol, day in zip(symbols, days)
+                ],
+            )
+
+        service = IngestionService(self.path, provider, sleep=lambda _: None)
+        service._execute("budget", 50, days[-1])
+
+        jobs = service.run("budget")["jobs"]
+        self.assertEqual(len(provider.calls), 3)
+        self.assertEqual(sum(job["status"] == "complete" for job in jobs), 3)
+        self.assertEqual(sum(job["status"] == "failed" for job in jobs), 2)
+
+    def test_worker_recognizes_persisted_scheduled_attempt(self):
+        session = date(2026, 8, 31)
+        worker = IngestionWorker(self.path)
+        with database_connection(self.path) as db:
+            db.execute(
+                "INSERT INTO ingestion_runs VALUES ('explicit','2026-09-01T00:01:00+00:00',NULL,'complete','explicit')"
+            )
+        self.assertFalse(worker._scheduled_run_exists(session))
+        with database_connection(self.path) as db:
+            db.execute(
+                "INSERT INTO ingestion_runs VALUES ('scheduled','2026-09-01T00:01:00+00:00',NULL,'partial','stored')"
+            )
+        self.assertTrue(worker._scheduled_run_exists(session))
+
+    def test_running_explicit_job_recovers_despite_scheduled_attempt(self):
+        session = date(2026, 8, 31)
+        provider = FakeProvider(bars([session], ("AAPL",)))
+        with database_connection(self.path) as db:
+            db.execute(
+                "INSERT INTO ingestion_runs VALUES ('scheduled','2026-09-01T00:01:00+00:00','2026-09-01T00:02:00+00:00','complete','stored')"
+            )
+            db.execute(
+                "INSERT INTO ingestion_runs VALUES ('explicit-running',?,NULL,'running','explicit')",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
+            db.execute(
+                "INSERT INTO ingestion_jobs(run_id,symbol,start_date,reasons,status) VALUES ('explicit-running','AAPL','2026-08-31','[]','running')"
+            )
+
+        service = IngestionService(self.path, provider, sleep=lambda _: None)
+        service.recover(batch_size=50, today=session)
+
+        self.assertEqual(service.run("explicit-running")["status"], "complete")
+        self.assertEqual(len(provider.calls), 1)
+        self.assertTrue(IngestionWorker(self.path)._scheduled_run_exists(session))
+
+    def test_ingestion_quarantines_impossible_provider_ohlc(self):
+        days = sessions(date(2026, 8, 3), date(2026, 8, 5))
+        source = bars(days, ("HUBB",)).with_columns(
+            pl.when(pl.col("Date") == days[1])
+            .then(pl.col("Low") - 1)
+            .otherwise(pl.col("Open"))
+            .alias("Open")
+        )
+
+        run = IngestionService(
+            self.path, FakeProvider(source), sleep=lambda _: None
+        ).synchronize(symbols=["HUBB"], horizon=days[0], today=days[-1])
+
+        self.assertEqual(run["status"], "complete")
+        stored = MarketDataRepository(self.path).load(["HUBB"])
+        quarantined = stored.filter(pl.col("Date") == days[1]).row(0, named=True)
+        self.assertIsNone(quarantined["Open"])
+        self.assertIsNone(quarantined["High"])
+        self.assertIsNone(quarantined["Low"])
+        self.assertIsNotNone(quarantined["Close"])
+        with database_connection(self.path, read_only=True) as db:
+            issues = db.execute(
+                "SELECT code,session_date FROM data_issues WHERE resolved_at IS NULL AND symbol='HUBB'"
+            ).fetchall()
+        self.assertIn(("incomplete_bar", days[1].isoformat()), [tuple(row) for row in issues])
+
+    def test_ingestion_reconciles_stale_issues_from_expected_first_session(self):
+        requested_start = date(2026, 1, 1)
+        days = sessions(requested_start, date(2026, 1, 6))
+        MarketDataRepository(self.path).save(bars(days, ("AAPL",)))
+        with database_connection(self.path) as db:
+            db.execute("UPDATE securities SET calendar='XNYS' WHERE symbol='AAPL'")
+            db.execute(
+                "INSERT INTO sync_coverage VALUES ('AAPL',?,?)",
+                (requested_start.isoformat(), datetime.now(timezone.utc).isoformat()),
+            )
+        service = IngestionService(self.path)
+        service.issue("AAPL", "history_starts_late", days[0].isoformat(), "stale")
+        service.issue("AAPL", "unknown_calendar", "", "stale")
+
+        service._audit_gaps("AAPL", days[-1])
+
+        with database_connection(self.path, read_only=True) as db:
+            unresolved = db.execute(
+                "SELECT code FROM data_issues WHERE resolved_at IS NULL AND symbol='AAPL'"
+            ).fetchall()
+        self.assertEqual(unresolved, [])
+
+        with database_connection(self.path) as db:
+            db.execute(
+                "DELETE FROM daily_bars WHERE security_id=(SELECT id FROM securities WHERE symbol='AAPL') AND session_date=?",
+                (days[0].isoformat(),),
+            )
+        service._audit_gaps("AAPL", days[-1])
+        with database_connection(self.path, read_only=True) as db:
+            unresolved = db.execute(
+                "SELECT code,session_date FROM data_issues WHERE resolved_at IS NULL AND symbol='AAPL'"
+            ).fetchall()
+        self.assertEqual(
+            [tuple(row) for row in unresolved],
+            [("history_starts_late", days[1].isoformat())],
+        )
+
+    def test_failed_gap_audit_does_not_resolve_existing_issues(self):
+        days = [date(2010, 1, 4), date(2030, 1, 30)]
+        MarketDataRepository(self.path).save(bars(days, ("AAPL",)))
+        with database_connection(self.path) as db:
+            db.execute("UPDATE securities SET calendar='XNYS' WHERE symbol='AAPL'")
+        service = IngestionService(self.path)
+        service.issue("AAPL", "missing_session", "2010-01-05", "existing")
+
+        with self.assertRaisesRegex(ValueError, "maximum 20 years"):
+            service._audit_gaps("AAPL", days[-1])
+
+        with database_connection(self.path, read_only=True) as db:
+            issue = db.execute(
+                "SELECT resolved_at FROM data_issues WHERE symbol='AAPL' AND code='missing_session'"
+            ).fetchone()
+        self.assertIsNone(issue["resolved_at"])
+
     def test_interrupted_planning_keeps_request_queued_until_full_plan_is_saved(self):
         from quant.platform_service import PlatformService
         platform = PlatformService(self.path)
@@ -231,6 +495,26 @@ class EngineTests(unittest.TestCase):
             service._publish("AAPL",partial.filter(pl.col("Symbol")=="AAPL"),days[-1])
         self.assertEqual(before,market.load(["AAPL"]).to_dicts())
 
+    def test_invalid_revision_cannot_remove_existing_ohlc(self):
+        days = sessions(date(2026, 8, 3), date(2026, 8, 5))
+        old = bars(days, ("AAPL",))
+        market = MarketDataRepository(self.path)
+        market.save(old)
+        before = market.load(["AAPL"]).to_dicts()
+        invalid = old.with_columns(
+            pl.when(pl.col("Date") == days[1])
+            .then(pl.col("Low") - 1)
+            .otherwise(pl.col("Open"))
+            .alias("Open")
+        )
+
+        with self.assertRaisesRegex(ValueError, "remove existing prices"):
+            IngestionService(
+                self.path, FakeProvider(invalid), sleep=lambda _: None
+            )._publish("AAPL", invalid, days[-1])
+
+        self.assertEqual(market.load(["AAPL"]).to_dicts(), before)
+
     def test_revision_full_history_has_no_splice(self):
         days=sessions(date(2026,8,3),date(2026,8,10))
         old=bars(days,("AAPL",))
@@ -239,6 +523,31 @@ class EngineTests(unittest.TestCase):
         service=IngestionService(self.path,FakeProvider(new),sleep=lambda _:None)
         service._publish("AAPL",new.tail(2),days[-1])
         self.assertEqual(MarketDataRepository(self.path).load(["AAPL"])["Adjusted Close"].to_list(),new["Adjusted Close"].to_list())
+
+    def test_revised_full_history_quarantines_impossible_new_ohlc(self):
+        days = sessions(date(2026, 8, 3), date(2026, 8, 10))
+        source = bars(days, ("AAPL",))
+        MarketDataRepository(self.path).save(source.tail(2))
+        revised = source.with_columns(
+            (pl.col("Adjusted Close") * 0.9).alias("Adjusted Close"),
+            pl.when(pl.col("Date") == days[0])
+            .then(pl.col("Low") - 1)
+            .otherwise(pl.col("Open"))
+            .alias("Open"),
+        )
+
+        IngestionService(
+            self.path, FakeProvider(revised), sleep=lambda _: None
+        )._publish("AAPL", revised, days[-1])
+
+        stored = MarketDataRepository(self.path).load(["AAPL"])
+        quarantined = stored.filter(pl.col("Date") == days[0]).row(0, named=True)
+        self.assertIsNone(quarantined["Open"])
+        self.assertIsNone(quarantined["High"])
+        self.assertIsNone(quarantined["Low"])
+        self.assertEqual(
+            stored["Adjusted Close"].to_list(), revised["Adjusted Close"].to_list()
+        )
 
     def test_universe_failure_does_not_block_personal_symbols(self):
         from quant.user_data import UserDataRepository
