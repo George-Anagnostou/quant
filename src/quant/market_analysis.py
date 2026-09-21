@@ -70,7 +70,7 @@ def analyze_symbols(
         raise ValueError("Price column must be Close or Adjusted Close")
 
     minimum_sessions = max(max(windows), 2)
-    accepted_minimum_sessions = 1 if allow_missing else 2
+    accepted_minimum_sessions = 1
     start = datetime.now(EASTERN_TIME).date() - timedelta(
         days=minimum_sessions * 2 + 30
     )

@@ -350,6 +350,56 @@ class DashboardApiAlphaTests(unittest.TestCase):
         self.assertEqual(legacy["warnings"], [warning])
         provider.assert_not_called()
 
+    @patch("quant.quotes.get_market_history", side_effect=AssertionError("network"))
+    def test_one_session_returns_partial_technicals_in_both_apis(
+        self, provider
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "quant.db"
+            repository = MarketDataRepository(path)
+            repository.save(
+                pl.DataFrame(
+                    {
+                        "Date": [date(2026, 8, 21)],
+                        "Symbol": ["SPCX"],
+                        "High": [101.0],
+                        "Low": [99.0],
+                        "Close": [100.0],
+                        "Adjusted Close": [100.0],
+                        "Volume": [1_000],
+                    }
+                )
+            )
+            service = DashboardService(
+                UserDataRepository(path, read_only=True),
+                MarketDataRepository(path, read_only=True),
+            )
+
+            with patch.object(api_alpha, "_service", service):
+                alpha_status, alpha = _asgi_get(
+                    server.app,
+                    "/api/alpha/securities/SPCX/technicals",
+                    "windows=1,20",
+                )
+            with patch.object(server, "_dashboard_service", service):
+                legacy_status, legacy = _asgi_get(
+                    server.app,
+                    "/api/analysis/SPCX",
+                    "windows=1,20&price=adjusted",
+                )
+
+        self.assertEqual(alpha_status, 200)
+        self.assertEqual(legacy_status, 200)
+        point = alpha["data"]["points"][0]
+        self.assertEqual(point["movingAverages"]["1"], 100.0)
+        self.assertIsNone(point["movingAverages"]["20"])
+        self.assertIsNone(point["dailyReturn"])
+        warning = next(item for item in alpha["warnings"] if item["code"] == "partial_data")
+        self.assertEqual(warning["details"][0]["requestedWindow"], 20)
+        self.assertEqual(warning["details"][0]["availableObservations"], 1)
+        self.assertEqual(legacy["warnings"], [warning])
+        provider.assert_not_called()
+
     def test_empty_portfolio_matches_its_documented_contract(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "quant.db"
