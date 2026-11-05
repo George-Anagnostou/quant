@@ -13,3 +13,7 @@ data/artifacts/
 
 # Private sample portfolio; never commit brokerage exports.
 /taxlots.csv
+
+# Broker CSV exports and import working files; never commit real holdings.
+data/imports/
+data/imports/**
