@@ -184,3 +184,30 @@ keep their IDs and acquire explicit metadata when next written. Retired watchlis
 rows are preserved in `retired_watchlist` solely for recovery, with no API or
 runtime feature using them. Restart the server to apply the migration. Frozen
 research databases are not migrated as a side effect of reads.
+
+## Broker CSV import (Phase 1)
+
+`quant import` turns a broker tax-lot CSV into the same `PortfolioWrite` batch used by
+`quant portfolio preview` / `apply`. Default is preview. Real brokerage files belong
+under `data/imports/` (git-ignored); never commit them.
+
+JPMorgan is the first parser (`--broker jpmorgan`, default). It follows the column
+mapping in [PORTFOLIO_CASE_STUDY.md](PORTFOLIO_CASE_STUDY.md): title line before the
+header, USD cash as a no-ticker row, total `Cost` over `Unit Cost`, M/D/Y dates,
+damaged CUSIPs kept only in `original`, document/row `sourceLotId`, unknown sector,
+and `As of` as `effectiveDate`. `Used/Outstanding` is not lot quantity.
+
+```sh
+# Preview (no writes). Suggested account name for the taxable brokerage:
+uv run quant import data/imports/taxlots.csv --account "JPMorgan brokerage" --pretty
+
+# Apply after review (idempotent for the identical file bytes):
+uv run quant import data/imports/taxlots.csv --account "JPMorgan brokerage" --apply --pretty
+
+# Isolated database / alternate broker key once more parsers exist:
+uv run quant import path.csv --account "JPMorgan brokerage" --broker jpmorgan --database /tmp/quant.db
+```
+
+The `importKey` is `jpmorgan:<sha256 of file bytes>`. Retrying the same file replays
+the original batch result (`alreadyApplied: true`) instead of creating duplicate lots.
+Phase 1 accepts USD stocks/ETFs/cash only.

@@ -1,0 +1,10 @@
+JPMorgan Tax Lot Report - synthetic fixture (not real holdings)
+Ticker,Quantity,Cost,Unit Cost,Acquisition Date,Account type,Base CCY,Description,CUSIP,Asset Class,Asset Strategy,As of,Price,Value,Pricing Date,Used/Outstanding,Gain/Loss,Term
+AAPL,3,300.01,100.00,08/20/2025,Brokerage,USD,Apple Inc.,037833100,Equity,Core,09/01/2026,210.00,630.00,09/01/2026,10,329.99,Long
+AAPL,7,700.00,100.00,01/15/2026,Brokerage,USD,Apple Inc.,037833100,Equity,Core,09/01/2026,210.00,1470.00,09/01/2026,10,770.00,Short
+MSFT,2,800.00,400.00,03/10/2025,Brokerage,USD,Microsoft Corporation,594918104,Equity,Core,09/01/2026,420.00,840.00,09/01/2026,2,40.00,Long
+BRK.B,1,450.00,450.00,06/01/2024,Brokerage,USD,Berkshire Hathaway Inc. Class B,084670702,Equity,Core,09/01/2026,460.00,460.00,09/01/2026,1,10.00,Long
+SPY,5,2500.00,500.00,11/02/2023,Brokerage,USD,SPDR S&P 500 ETF Trust,78462F103,ETF,Index,09/01/2026,520.00,2600.00,09/01/2026,5,100.00,Long
+BADCUSIP,4,100.00,25.00,02/02/2025,Brokerage,USD,Damaged eight-char CUSIP example,12345678,Equity,Core,09/01/2026,30.00,120.00,09/01/2026,4,20.00,Long
+SCINOT,1,50.00,50.00,04/04/2025,Brokerage,USD,Scientific-notation CUSIP example,1.23457E+11,Equity,Core,09/01/2026,55.00,55.00,09/01/2026,1,5.00,Long
+,1500.00,0.00,,,Brokerage,USD,US DOLLAR,,Cash,,09/01/2026,,1500.00,09/01/2026,9999,,

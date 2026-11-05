@@ -67,6 +67,14 @@ uv run quant portfolio schema --pretty
 uv run quant portfolio preview --json-file portfolio.json --pretty
 uv run quant portfolio apply --json-file portfolio.json --pretty
 uv run quant portfolio history --pretty
+
+Broker tax-lot CSV intake (JPMorgan first; preview by default):
+
+```sh
+uv run quant import data/imports/taxlots.csv --account "JPMorgan brokerage" --pretty
+uv run quant import data/imports/taxlots.csv --account "JPMorgan brokerage" --apply --pretty
+```
+
 ```
 
 See [portfolio analytics and transactions](docs/PORTFOLIO_ANALYTICS.md) for ticker
