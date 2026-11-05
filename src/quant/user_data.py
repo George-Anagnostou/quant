@@ -349,38 +349,92 @@ class UserDataRepository:
                 lots[identifier] = {'id': identifier, **lot, 'asOf': effective, 'source': body.source}
                 change.update(lotId=identifier, after=copy.deepcopy(lots[identifier]))
             elif kind in {'sell', 'remove'}:
-                identifier = action.lotId
-                if kind == 'sell' and identifier is None:
-                    matches = [key for key,lot in lots.items() if lot['account']==action.account and lot.get('sourceLotId')==action.sourceLotId]
-                    if len(matches)!=1:
-                        raise ValueError('Source lot selector must match exactly one active lot in the account')
-                    identifier = matches[0]
-                if identifier not in lots:
-                    raise ValueError('Unknown lot for this user')
-                lot = lots[identifier]
-                account = account_for(lot['account'])
-                change.update(lotId=identifier, before=copy.deepcopy(lot))
                 if kind == 'remove':
+                    identifier = action.lotId
+                    if identifier not in lots:
+                        raise ValueError('Unknown lot for this user')
+                    lot = lots[identifier]
+                    account = account_for(lot['account'])
+                    change.update(lotId=identifier, before=copy.deepcopy(lot), after=None)
                     del lots[identifier]
-                    change['after'] = None
+                    account['asOf'] = effective
+                    changes.append(change)
+                    continue
+                # Explicit lot, sourceLotId, or FIFO by account+symbol.
+                targets: list[tuple[str, Decimal, Decimal]] = []
+                if action.lotId:
+                    identifier = action.lotId
+                    if identifier not in lots:
+                        raise ValueError('Unknown lot for this user')
+                    targets = [(identifier, action.quantity, action.fees)]
+                elif action.sourceLotId:
+                    matches = [key for key, lot in lots.items()
+                               if lot['account'] == action.account and lot.get('sourceLotId') == action.sourceLotId]
+                    if len(matches) != 1:
+                        raise ValueError('Source lot selector must match exactly one active lot in the account')
+                    targets = [(matches[0], action.quantity, action.fees)]
                 else:
+                    candidates = [
+                        (key, lot) for key, lot in lots.items()
+                        if lot['account'] == action.account and lot['symbol'] == action.symbol
+                    ]
+                    if not candidates:
+                        raise ValueError('FIFO sale requires owned lots for the symbol in the account')
+                    candidates.sort(key=lambda item: (
+                        item[1].get('acquired') is None,
+                        item[1].get('acquired') or '',
+                        item[0],
+                    ))
+                    remaining = action.quantity
+                    available = sum(Decimal(lot['quantity']) for _, lot in candidates)
+                    if remaining > available:
+                        raise ValueError('FIFO sale quantity exceeds owned quantity for symbol')
+                    slices: list[tuple[str, Decimal]] = []
+                    for key, lot in candidates:
+                        if remaining <= 0:
+                            break
+                        owned = Decimal(lot['quantity'])
+                        take = owned if owned <= remaining else remaining
+                        slices.append((key, take))
+                        remaining -= take
+                    # Allocate fees across slices; last slice receives the remainder for exactness.
+                    allocated_fees = Decimal(0)
+                    for index, (key, take) in enumerate(slices):
+                        if index == len(slices) - 1:
+                            fee = action.fees - allocated_fees
+                        else:
+                            fee = (action.fees * take / action.quantity).quantize(Decimal('0.000000000001'))
+                            allocated_fees += fee
+                        targets.append((key, take, fee))
+                account = None
+                for index, (identifier, sell_quantity, sell_fees) in enumerate(targets):
+                    lot = lots[identifier]
+                    account = account_for(lot['account'])
+                    entry = {'action': 'sell', 'input': item, 'lotId': identifier, 'before': copy.deepcopy(lot)}
+                    if len(targets) > 1:
+                        entry['fifo'] = True
+                        entry['fifoIndex'] = index
                     quantity, cost = Decimal(lot['quantity']), Decimal(lot['totalCost'])
-                    if action.quantity > quantity:
+                    if sell_quantity > quantity:
                         raise ValueError('Sale quantity exceeds selected lot')
-                    proceeds = action.quantity * action.unitPrice - action.fees
+                    proceeds = sell_quantity * action.unitPrice - sell_fees
                     if proceeds < 0:
                         raise ValueError('Sale fees exceed proceeds')
-                    removed_cost = cost if action.quantity == quantity else (cost * action.quantity / quantity).quantize(Decimal('0.000000000001'))
+                    removed_cost = cost if sell_quantity == quantity else (cost * sell_quantity / quantity).quantize(Decimal('0.000000000001'))
                     change_cash(account, proceeds)
-                    change.update(proceeds=str(proceeds), removedCost=str(removed_cost), realizedGain=str(proceeds-removed_cost))
-                    if action.quantity == quantity:
+                    entry.update(proceeds=str(proceeds), removedCost=str(removed_cost),
+                                 realizedGain=str(proceeds - removed_cost),
+                                 quantity=str(sell_quantity), fees=str(sell_fees))
+                    if sell_quantity == quantity:
                         del lots[identifier]
-                        change['after'] = None
+                        entry['after'] = None
                     else:
-                        lot.update(quantity=str(quantity-action.quantity), totalCost=str(cost-removed_cost), asOf=effective)
-                        # A prior reported valuation describes the pre-sale lot.
+                        lot.update(quantity=str(quantity - sell_quantity), totalCost=str(cost - removed_cost), asOf=effective)
                         lot.update(reportedPrice=None, reportedValue=None, priceDate=None)
-                        change['after'] = copy.deepcopy(lot)
+                        entry['after'] = copy.deepcopy(lot)
+                    account['asOf'] = effective
+                    changes.append(entry)
+                continue
             elif kind == 'split':
                 account = account_for(action.account)
                 affected = [lot for lot in lots.values() if lot['account']==action.account and lot['symbol']==action.symbol]

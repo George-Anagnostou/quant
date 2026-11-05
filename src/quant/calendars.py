@@ -1,14 +1,17 @@
-"""Versioned US cash-equity sessions, with conservative 20:00 ET availability.
+"""Versioned market calendars: XNYS cash equity and CRYPTO_UTC 24/7 daily bars.
 
-This calendar is deliberately bounded. Unknown venues and years are not guessed.
-Early closes do not change the conservative provider settlement cutoff.
+XNYS remains weekday/holiday aware with conservative 20:00 ET availability.
+CRYPTO_UTC is every UTC calendar day for crypto daily bars so readiness and gap
+checks do not expect exchange sessions.
 """
 from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 EASTERN = ZoneInfo("America/New_York")
-CALENDAR_VERSION = "xnys-2010-2030-v1"
+UTC = ZoneInfo("UTC")
+CALENDAR_VERSION = "xnys-2010-2030+crypto-utc-v1"
+SUPPORTED_CALENDARS = ("XNYS", "CRYPTO_UTC")
 
 
 def _weekday(year, month, weekday, occurrence):
@@ -53,29 +56,38 @@ def holidays(year):
 
 
 def sessions(start: date, end: date, calendar: str = "XNYS") -> list[date]:
-    if calendar != "XNYS":
-        raise ValueError("Unsupported calendar")
-    if start > end or (end-start).days > 20*366:
+    if start > end or (end - start).days > 20 * 366:
         raise ValueError("Invalid calendar range (maximum 20 years)")
-    holidays(start.year)
-    holidays(end.year)
-    return [day for offset in range((end-start).days+1)
-            if (day := start+timedelta(days=offset)).weekday() < 5
-            and day not in holidays(day.year)]
+    if calendar == "XNYS":
+        holidays(start.year)
+        holidays(end.year)
+        return [day for offset in range((end - start).days + 1)
+                if (day := start + timedelta(days=offset)).weekday() < 5
+                and day not in holidays(day.year)]
+    if calendar == "CRYPTO_UTC":
+        # Crypto daily bars: every UTC calendar day, including weekends/holidays.
+        if start.year < 2010 or end.year > 2030:
+            raise ValueError("CRYPTO_UTC calendar supports 2010-2030")
+        return [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
+    raise ValueError("Unsupported calendar")
 
 
-def latest_completed_session(now: datetime | None = None) -> date:
+def latest_completed_session(now: datetime | None = None, calendar: str = "XNYS") -> date:
+    if calendar == "CRYPTO_UTC":
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        # A UTC daily bar for date D is treated as complete after 00:00 UTC on D+1.
+        return current.date() - timedelta(days=1)
     now = (now or datetime.now(EASTERN)).astimezone(EASTERN)
     end = now.date() - timedelta(days=now.time() < time(20))
-    return sessions(end-timedelta(days=14), end)[-1]
+    return sessions(end - timedelta(days=14), end, "XNYS")[-1]
 
 
 def freshness(observed: str | None, calendar: str | None = "XNYS", now=None):
-    if observed is None or calendar != "XNYS":
+    if observed is None or calendar not in {"XNYS", "CRYPTO_UTC"}:
         return {"status": "unknown", "latestCompletedSession": None,
                 "missingSessions": None, "calendar": calendar}
-    latest = latest_completed_session(now)
+    latest = latest_completed_session(now, calendar)
     day = date.fromisoformat(observed)
     return {"status": "current" if day == latest else "stale" if day < latest else "unknown",
             "latestCompletedSession": latest.isoformat(), "calendar": calendar,
-            "missingSessions": len(sessions(day+timedelta(days=1), latest)) if day < latest else 0}
+            "missingSessions": len(sessions(day + timedelta(days=1), latest, calendar)) if day < latest else 0}

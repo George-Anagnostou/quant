@@ -24,7 +24,7 @@ class PlatformService:
 
     def capabilities(self):
         return {"methodologyVersion":METHOD_VERSION,"calendarVersion":CALENDAR_VERSION,
-            "providers":["yahoo","sec"],"baseCurrency":"USD","calendars":["XNYS"],
+            "providers":["yahoo","sec"],"baseCurrency":"USD","calendars":["XNYS","CRYPTO_UTC"],
             "limits":{"portfolioPositions":200,"jointRiskPositions":50,"factorProxies":5,"recordBytes":8388608},
             "units":{"returns":"fraction","weights":"fraction","legacyCorePercentColumns":"explicit % suffix","costs":"basis points"},
             "features":["portfolio_lots","portfolio_cash","portfolio_mutations","portfolio_preview","portfolio_analysis","strategy_sector_allocation","transaction_imports","realized_gains","daily_nav","actual_account_risk","sale_simulations","holdings_scenarios","profit_contributions","snapshots","portfolio_readiness","frozen_research_runs","evidence","ledger_reconciliation","market_breadth","factor_proxies","hypothesis_tests","agent_evaluations"],
