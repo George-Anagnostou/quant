@@ -35,6 +35,36 @@ def main(argv: Sequence[str] | None = None) -> None:
         backup_database(args.database, args.destination)
         print(json.dumps({"backup": str(args.destination), "verified": True}))
         return
+    if args.command == "import":
+        import json
+        from quant.importers.service import run_import
+        outcome = run_import(
+            path=args.csv_path,
+            account=args.account,
+            broker=args.broker,
+            apply=args.apply,
+            database=args.database,
+        )
+        # Preview omits the full before/after dump unless --verbose-result.
+        payload = {
+            "broker": outcome["broker"],
+            "account": outcome["account"],
+            "importKey": outcome["importKey"],
+            "effectiveDate": outcome["effectiveDate"],
+            "contentDigest": outcome["contentDigest"],
+            "applied": outcome["applied"],
+            "alreadyApplied": outcome["alreadyApplied"],
+            "warnings": outcome["warnings"],
+            "lotCount": sum(1 for action in outcome["batch"]["actions"] if action["action"] == "add"),
+            "cashActions": [a for a in outcome["batch"]["actions"] if a["action"] == "cash"],
+            "revisionBefore": outcome["result"]["before"]["revision"],
+            "revisionAfter": outcome["result"]["after"]["revision"],
+            "batch": outcome["batch"],
+        }
+        if args.full_result:
+            payload["result"] = outcome["result"]
+        print(json.dumps(payload, indent=2 if args.pretty else None, sort_keys=True))
+        return
     if args.command == "serve":
         run_server(
             host=args.host,
@@ -83,6 +113,34 @@ def _build_parser() -> argparse.ArgumentParser:
     query.add_argument("arguments", nargs=argparse.REMAINDER)
     portfolio = commands.add_parser("portfolio", help="inspect, preview, and update portfolio lots through the API")
     portfolio.add_argument("arguments", nargs=argparse.REMAINDER)
+
+    import_cmd = commands.add_parser(
+        "import",
+        help="preview or apply a broker tax-lot CSV through the portfolio batch path",
+    )
+    import_cmd.add_argument("csv_path", type=Path, help="path to the broker tax-lot CSV")
+    import_cmd.add_argument(
+        "--account",
+        required=True,
+        help="stable account name (example: 'JPMorgan brokerage')",
+    )
+    import_cmd.add_argument(
+        "--broker",
+        default="jpmorgan",
+        help="broker parser to use (default: jpmorgan)",
+    )
+    import_cmd.add_argument(
+        "--apply",
+        action="store_true",
+        help="apply the batch; default is preview only",
+    )
+    import_cmd.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    import_cmd.add_argument("--pretty", action="store_true", help="indent JSON output")
+    import_cmd.add_argument(
+        "--full-result",
+        action="store_true",
+        help="include the full portfolio before/after projection",
+    )
 
     data = commands.add_parser("data", help="inspect the server data pipeline")
     data_commands = data.add_subparsers(dest="data_command")
