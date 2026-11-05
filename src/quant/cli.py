@@ -35,6 +35,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         backup_database(args.database, args.destination)
         print(json.dumps({"backup": str(args.destination), "verified": True}))
         return
+    if args.command == "review":
+        import json
+        from quant.review import write_review_report
+        outcome = write_review_report(
+            database=args.database,
+            as_of=args.date,
+            output=args.output,
+        )
+        print(json.dumps(outcome, indent=2 if args.pretty else None, sort_keys=True))
+        return
     if args.command == "import":
         import json
         from quant.importers.service import run_import
@@ -113,6 +123,25 @@ def _build_parser() -> argparse.ArgumentParser:
     query.add_argument("arguments", nargs=argparse.REMAINDER)
     portfolio = commands.add_parser("portfolio", help="inspect, preview, and update portfolio lots through the API")
     portfolio.add_argument("arguments", nargs=argparse.REMAINDER)
+
+    review_cmd = commands.add_parser(
+        "review",
+        help="write a markdown portfolio review from stored holdings and prices",
+    )
+    review_cmd.add_argument(
+        "--date",
+        type=_date,
+        default=None,
+        help="valuation date YYYY-MM-DD (default: latest completed XNYS session)",
+    )
+    review_cmd.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="markdown output path (default: data/reports/review-<date>.md)",
+    )
+    review_cmd.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    review_cmd.add_argument("--pretty", action="store_true", help="indent JSON summary")
 
     import_cmd = commands.add_parser(
         "import",

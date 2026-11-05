@@ -75,6 +75,13 @@ uv run quant import data/imports/taxlots.csv --account "JPMorgan brokerage" --pr
 uv run quant import data/imports/taxlots.csv --account "JPMorgan brokerage" --apply --pretty
 ```
 
+Markdown portfolio review (CLI; uses stored prices only):
+
+```sh
+uv run quant review --date 2026-09-01 --pretty
+uv run quant review --output /tmp/review.md
+```
+
 ```
 
 See [portfolio analytics and transactions](docs/PORTFOLIO_ANALYTICS.md) for ticker
