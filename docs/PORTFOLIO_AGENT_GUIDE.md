@@ -211,3 +211,19 @@ uv run quant import path.csv --account "JPMorgan brokerage" --broker jpmorgan --
 The `importKey` is `jpmorgan:<sha256 of file bytes>`. Retrying the same file replays
 the original batch result (`alreadyApplied: true`) instead of creating duplicate lots.
 Phase 1 accepts USD stocks/ETFs/cash only.
+
+## Portfolio review report
+
+`quant review` writes a markdown summary from existing analysis, tax-lot holding days,
+and current-share risk helpers. It does not add new financial math or expand the
+dashboard. Default output: `data/reports/review-<date>.md` (git-ignored).
+
+```sh
+uv run quant review --date 2026-09-01 --pretty
+uv run quant review --output /tmp/review.md --database data/quant.db
+```
+
+Sections: combined totals/cash, allocation/concentration, short- vs long-term
+unrealized gains (descriptive >365 day bucket), risk vs SPY from stored prices
+(warns instead of crashing when history is missing), and a diff vs the prior
+portfolio revision when one exists.

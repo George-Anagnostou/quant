@@ -17,3 +17,7 @@ data/artifacts/
 # Broker CSV exports and import working files; never commit real holdings.
 data/imports/
 data/imports/**
+
+# Generated portfolio review markdown; may reference personal holdings.
+data/reports/
+data/reports/**
