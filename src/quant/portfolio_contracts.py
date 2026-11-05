@@ -71,18 +71,34 @@ class SellAction(StrictModel):
     lotId: Text | None = None
     sourceLotId: Text | None = None
     account: Text | None = None
+    symbol: Symbol | None = None
     quantity: Quantity
     unitPrice: Amount
     fees: Amount = Decimal(0)
 
+    @field_validator('symbol', mode='before')
+    @classmethod
+    def normalize_sale_symbol(cls, value):
+        if value is None:
+            return value
+        from quant.market_data import normalize_symbol
+        return normalize_symbol(value) if isinstance(value, str) else value
+
     @model_validator(mode='after')
-    def explicit_lot(self):
+    def explicit_or_fifo_lot(self):
         if self.lotId:
-            if self.sourceLotId or self.account:
-                raise ValueError('Use lotId or account plus sourceLotId, not both')
-        elif not self.sourceLotId or not self.account:
-            raise ValueError('Sale requires lotId or account plus sourceLotId')
-        return self
+            if self.sourceLotId or self.account or self.symbol:
+                raise ValueError('Use lotId alone, account plus sourceLotId, or account plus symbol for FIFO')
+            return self
+        if self.sourceLotId:
+            if not self.account:
+                raise ValueError('Sale requires lotId, account plus sourceLotId, or account plus symbol for FIFO')
+            if self.symbol:
+                raise ValueError('sourceLotId selector cannot include symbol; use account plus symbol for FIFO')
+            return self
+        if self.account and self.symbol:
+            return self
+        raise ValueError('Sale requires lotId, account plus sourceLotId, or account plus symbol for FIFO')
 
 
 class SplitAction(StrictModel):

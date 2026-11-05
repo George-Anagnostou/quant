@@ -156,8 +156,12 @@ class IngestionService:
             starts.append(horizon)
             reasons.append("missing_prefix")
         calendar = security["calendar"] if security else None
-        missing = (sorted(set(sessions(max(horizon, first), min(last, latest), calendar)) - set(history["Date"]))
-                   if calendar == "XNYS" and max(horizon,first) <= min(last,latest) else [])
+        bound = latest
+        if calendar == "CRYPTO_UTC":
+            from quant.calendars import latest_completed_session as _latest
+            bound = min(latest, _latest(calendar="CRYPTO_UTC"))
+        missing = (sorted(set(sessions(max(horizon, first), min(last, bound), calendar)) - set(history["Date"]))
+                   if calendar in {"XNYS", "CRYPTO_UTC"} and max(horizon, first) <= min(last, bound) else [])
         if missing:
             starts.append(missing[0])
             reasons.append("internal_gap")
@@ -308,18 +312,26 @@ class IngestionService:
                 if old_fields.filter(pl.any_horizontal(pl.col(field).is_not_null() & pl.col(field+"_new").is_null() for field in fields)).height:
                     raise ValueError("Revision drops existing observations")
                 incoming = replacement
+        from quant.crypto_assets import crypto_metadata, yahoo_symbol_for
+        provider_ticker = yahoo_symbol_for(symbol) or symbol.replace('.', '-')
         with database_connection(self.path,read_only=True) as db:
             alias = db.execute("SELECT s.symbol FROM provider_symbols p JOIN securities s ON s.id=p.security_id WHERE provider=? AND provider_symbol=?",
-                               (self.provider.name,symbol.replace('.', '-'))).fetchone()
+                               (self.provider.name, provider_ticker)).fetchone()
             if alias and alias[0] != symbol:
                 raise ValueError("Provider symbol already belongs to another canonical security")
         # save validates the entire frame before the per-symbol atomic upsert.
         saved = self.market.save(incoming, provider=self.provider.name)
         with database_connection(self.path) as db:
-            if symbol in self.known_us_symbols:
+            meta = crypto_metadata(symbol)
+            if meta is not None:
+                db.execute(
+                    "UPDATE securities SET currency=?,calendar=?,instrument_type=? WHERE symbol=?",
+                    (meta["currency"], meta["calendar"], meta["instrumentType"], symbol),
+                )
+            elif symbol in self.known_us_symbols:
                 db.execute("UPDATE securities SET currency=COALESCE(currency,'USD'),calendar=COALESCE(calendar,'XNYS'),instrument_type=COALESCE(instrument_type,'us_listed') WHERE symbol=?", (symbol,))
             db.execute("INSERT INTO provider_symbols SELECT id,?,? FROM securities WHERE symbol=? ON CONFLICT(security_id,provider) DO UPDATE SET provider_symbol=excluded.provider_symbol",
-                       (self.provider.name, symbol.replace('.', '-'), symbol))
+                       (self.provider.name, provider_ticker, symbol))
             db.execute("UPDATE data_issues SET resolved_at=? WHERE symbol=? AND code='ingestion_failed'", (utc_now(), symbol))
         return saved
 
@@ -342,6 +354,19 @@ class IngestionService:
                 issues.append(("history_starts_late",first.isoformat(),"Provider history begins after requested horizon; pre-listing status has not been established"))
             for day in sorted(set(sessions(first, latest)) - set(history["Date"])):
                 issues.append(("missing_session",day.isoformat(),"Missing within observed history; listing/delisting status not established"))
+        elif calendar == "CRYPTO_UTC":
+            from quant.calendars import latest_completed_session as _latest
+            bound = min(latest, _latest(calendar="CRYPTO_UTC"))
+            requested = date.fromisoformat(checked[0]) if checked else None
+            if requested is not None:
+                expected = sessions(requested, min(requested + timedelta(days=14), bound), "CRYPTO_UTC")
+                if expected and expected[0] < first:
+                    issues.append(("history_starts_late", first.isoformat(),
+                                   "Provider history begins after requested horizon; pre-listing status has not been established"))
+            if first is not None and first <= bound:
+                for day in sorted(set(sessions(first, bound, "CRYPTO_UTC")) - set(history["Date"])):
+                    issues.append(("missing_session", day.isoformat(),
+                                   "Missing crypto UTC daily bar within observed history"))
         else:
             issues.append(("unknown_calendar","","Security calendar/currency requires explicit metadata before completeness can be established"))
         for row in history.filter(pl.any_horizontal(pl.col(c).is_null() for c in ["Open", "High", "Low", "Volume", "Adjusted Close"])).to_dicts():

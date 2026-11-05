@@ -217,13 +217,54 @@ def build_review_report(
     warnings.extend(analysis.get("warnings") or [])
     warnings.extend(tax.get("warnings") or [])
 
-    summary = analysis["summary"]
-    accounts = analysis.get("accounts") or []
+    from quant.crypto_assets import is_crypto_symbol
+    from quant.analysis import aggregate_portfolio_values, portfolio_value_summary
+    import polars as pl
+
+    raw_lots = tax.get("lots") or analysis.get("lots") or []
+    crypto_lots = [lot for lot in raw_lots if is_crypto_symbol(str(lot.get("symbol", "")))]
+    lots = [lot for lot in raw_lots if not is_crypto_symbol(str(lot.get("symbol", "")))]
+    if crypto_lots:
+        warnings.append(
+            f"Omitted {len(crypto_lots)} crypto lot(s) from stock/ETF review; crypto review is a later Phase 1B step."
+        )
+    if lots:
+        frame = pl.DataFrame(lots)
+        # Rebuild equity-only summary/positions from the already-valued lot rows.
+        accounts = analysis.get("accounts") or []
+        summary = portfolio_value_summary(frame, accounts)
+        positions = aggregate_portfolio_values(frame, "symbol", summary["accountValue"]).to_dicts()
+        quote_fields = {
+            row["symbol"]: row
+            for row in frame.select("symbol", "lastPrice", "priceDate", "dayReturn").unique().to_dicts()
+        }
+        for position in positions:
+            position.update(quote_fields.get(position["symbol"], {}))
+    else:
+        accounts = analysis.get("accounts") or []
+        summary = {
+            "totalCost": 0.0,
+            "pricedSecuritiesValue": 0.0,
+            "securitiesValue": 0.0,
+            "knownCash": sum(float(a["cash"]) for a in accounts if a.get("cash") is not None),
+            "cash": (
+                sum(float(a["cash"]) for a in accounts if a.get("cash") is not None)
+                if accounts and all(a.get("cash") is not None for a in accounts)
+                else None
+            ),
+            "accountValue": None,
+            "unrealizedGain": 0.0,
+            "unrealizedReturn": None,
+            "unpricedLotCount": 0,
+        }
+        if summary["cash"] is not None:
+            summary["accountValue"] = float(summary["cash"])
+            summary["securitiesValue"] = 0.0
+        positions = []
     positions = sorted(
-        analysis.get("positions") or [],
+        positions,
         key=lambda row: (row.get("weight") is None, -(row.get("weight") or 0.0), row["symbol"]),
     )
-    lots = tax.get("lots") or analysis.get("lots") or []
     terms = _term_buckets(lots)
 
     lines: list[str] = [
@@ -311,7 +352,8 @@ def build_review_report(
         ]
     )
 
-    lines.extend(_risk_section(service, analysis, warnings))
+    equity_analysis = {**analysis, "positions": positions, "lots": lots, "summary": summary}
+    lines.extend(_risk_section(service, equity_analysis, warnings))
     lines.extend(_prior_revision_diff(repository))
 
     unique_warnings: list[str] = []

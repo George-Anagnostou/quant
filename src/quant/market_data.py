@@ -28,8 +28,17 @@ EOD_SETTLEMENT_TIME = time(20, 0)
 
 
 def normalize_symbol(symbol: str) -> str:
-    """Use the provider share-class spelling at explicit symbol intake boundaries."""
-    return symbol.strip().upper().replace('.', '-')
+    """Use the provider share-class spelling at explicit symbol intake boundaries.
+
+    Equity share classes use Yahoo's dash form (BRK.B -> BRK-B). Crypto yahoo
+    pairs such as ETH-USD collapse to the stable ID ETH.
+    """
+    from quant.crypto_assets import canonical_crypto_symbol, is_crypto_symbol
+
+    cleaned = symbol.strip().upper()
+    if is_crypto_symbol(cleaned):
+        return canonical_crypto_symbol(cleaned)
+    return cleaned.replace('.', '-')
 
 
 def get_sp500_constituents() -> pl.DataFrame:
@@ -66,14 +75,27 @@ def get_market_history(
     symbols: Iterable[str],
     start: date | None = None,
 ) -> pl.DataFrame:
+    from quant.crypto_assets import (
+        canonical_crypto_symbol,
+        is_crypto_symbol,
+        yahoo_symbol_for,
+    )
+
     symbols = list(
         dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip())
     )
     if not symbols:
         return pl.DataFrame(schema=MARKET_DATA_SCHEMA)
 
-    # Yahoo uses dashes for share classes while the index uses dots.
-    yahoo_to_index_symbol = {normalize_symbol(symbol): symbol for symbol in symbols}
+    # Yahoo uses dashes for share classes while callers may still pass dots.
+    # Crypto IDs download as *-USD and are stored under the stable canonical ID.
+    yahoo_to_index_symbol: dict[str, str] = {}
+    for symbol in symbols:
+        if is_crypto_symbol(symbol):
+            canonical = canonical_crypto_symbol(symbol)
+            yahoo_to_index_symbol[yahoo_symbol_for(canonical)] = canonical
+        else:
+            yahoo_to_index_symbol[symbol.replace('.', '-')] = symbol
     download_options = {
         "tickers": list(yahoo_to_index_symbol),
         "interval": "1d",

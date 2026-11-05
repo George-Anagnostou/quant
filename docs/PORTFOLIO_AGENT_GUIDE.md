@@ -227,3 +227,19 @@ Sections: combined totals/cash, allocation/concentration, short- vs long-term
 unrealized gains (descriptive >365 day bucket), risk vs SPY from stored prices
 (warns instead of crashing when history is missing), and a diff vs the prior
 portfolio revision when one exists.
+
+## FIFO sells and crypto groundwork (Phase 1B)
+
+Sells still accept an explicit `lotId` or `account` + `sourceLotId`. They also accept
+`account` + `symbol` to consume the oldest lots by acquisition date (FIFO), splitting
+a partial lot and preserving proportional remaining cost and realized gain. Fees are
+allocated across consumed lots with an exact remainder on the last slice.
+
+```json
+{"action":"sell","account":"JPMorgan brokerage","symbol":"ETH","quantity":"1.5","unitPrice":"3200","fees":"1"}
+```
+
+Crypto asset IDs are `BTC`, `ETH`, `SOL`, and `PSOL`. Free Yahoo daily bars use
+`BTC-USD` / `ETH-USD` / `SOL-USD` and store under the canonical IDs with calendar
+`CRYPTO_UTC` (every UTC day). `quant review` remains stocks/ETFs/cash only and omits
+crypto lots. Coinbase/Phantom import, PSOL rate tracking, and crypto review come later.
